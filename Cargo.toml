@@ -29,7 +29,7 @@ warp = { version = "0.4", features = ["server", "websocket"] }
 reqwest = { version = "0.12.5", default-features = false, features = ["json", "rustls-tls"] }
 
 # WebSocket
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 # Concurrency and utilities
 dashmap = "6.1.0"
