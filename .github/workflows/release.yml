@@ -151,6 +151,45 @@ jobs:
           find artifacts -type f -exec cp {} release-assets/ \;
           ls -lh release-assets/
 
+      - name: Determine if this is the highest version
+        id: version-compare
+        run: |
+          NEW_VERSION="${{ needs.update-version.outputs.version }}"
+          echo "New version: $NEW_VERSION"
+
+          # If it's a prerelease (contains '-'), it should never be 'latest'
+          if [[ $NEW_VERSION == *-* ]]; then
+            echo "Version contains prerelease suffix, will not mark as latest"
+            echo "is_highest=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Fetch all tags and filter for stable versions only (no '-' in version)
+          git fetch --tags
+          EXISTING_VERSIONS=$(git tag -l 'v*' | grep -v '-' | sed 's/^v//' || true)
+
+          if [ -z "$EXISTING_VERSIONS" ]; then
+            echo "No existing stable versions found, this will be the first latest"
+            echo "is_highest=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Add the new version to the list and sort
+          ALL_VERSIONS=$(echo -e "$EXISTING_VERSIONS\n$NEW_VERSION")
+          HIGHEST_VERSION=$(echo "$ALL_VERSIONS" | sort -V | tail -n 1)
+
+          echo "All existing stable versions:"
+          echo "$EXISTING_VERSIONS"
+          echo "Highest version after sort: $HIGHEST_VERSION"
+
+          if [ "$HIGHEST_VERSION" = "$NEW_VERSION" ]; then
+            echo "This is the highest version, will mark as latest"
+            echo "is_highest=true" >> $GITHUB_OUTPUT
+          else
+            echo "This is not the highest version (highest: $HIGHEST_VERSION), will not mark as latest"
+            echo "is_highest=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -158,6 +197,7 @@ jobs:
           name: Release v${{ needs.update-version.outputs.version }}
           draft: false
           prerelease: ${{ contains(needs.update-version.outputs.version, '-') }}
+          make-latest: ${{ steps.version-compare.outputs.is_highest == 'true' }}
           files: release-assets/*
           generate_release_notes: true
           body: |
