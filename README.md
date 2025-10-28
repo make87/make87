@@ -1,148 +1,163 @@
-# gravity
+# make87 Community Platform
 
-Unified CLI and agent for the **make87** platform — enabling secure remote access, monitoring, and container orchestration for edge systems anywhere.
+Unified tooling for the **make87** platform — enabling secure remote access, monitoring, and container orchestration for edge systems anywhere.
 
-## Features
+## Components
 
-- **Agent Management** – Run or install the background agent daemon that connects to the make87 backend
-- **Application Management** – Build, push, and run containerized applications
-- **Stack Management** – Pull and run versioned Docker Compose files that you define on make87
-- **Authentication** – Log in, register, and manage credentials
-- **Self-Update** – Seamlessly update the CLI to the latest release
+This repository contains two main components:
+
+### 🖥️ m87 (Client)
+Command-line interface and agent for edge systems. Provides tools for:
+- Agent management and daemon operations
+- Application building, pushing, and running
+- Stack synchronization and management
+- Authentication and credential management
+- Self-update capabilities
+
+[Learn more →](./m87-client/README.md)
+
+### 🌐 m87-server (Server)
+Server component for the make87 platform.
+
+[Learn more →](./m87-server/README.md)
 
 ## Installation
 
+### Pre-built Binaries
+
+Download the latest release for your platform from the [Releases](../../releases) page:
+
+**Linux x86_64 (AMD64):**
+```bash
+# Download m87 client
+wget https://github.com/make87/make87/releases/latest/download/m87-x86_64-unknown-linux-gnu
+chmod +x m87-x86_64-unknown-linux-gnu
+sudo mv m87-x86_64-unknown-linux-gnu /usr/local/bin/m87
+
+# Download m87-server
+wget https://github.com/make87/make87/releases/latest/download/m87-server-x86_64-unknown-linux-gnu
+chmod +x m87-server-x86_64-unknown-linux-gnu
+sudo mv m87-server-x86_64-unknown-linux-gnu /usr/local/bin/m87-server
+```
+
+**Linux ARM64:**
+```bash
+# Download m87 client
+wget https://github.com/make87/make87/releases/latest/download/m87-aarch64-unknown-linux-gnu
+chmod +x m87-aarch64-unknown-linux-gnu
+sudo mv m87-aarch64-unknown-linux-gnu /usr/local/bin/m87
+
+# Download m87-server
+wget https://github.com/make87/make87/releases/latest/download/m87-server-aarch64-unknown-linux-gnu
+chmod +x m87-server-aarch64-unknown-linux-gnu
+sudo mv m87-server-aarch64-unknown-linux-gnu /usr/local/bin/m87-server
+```
+
 ### From Source
 
-```bash
-cargo build --release
-sudo cp target/release/gravity /usr/local/bin/
-```
+#### Prerequisites
+- Rust 1.70 or later
+- Cargo
 
-## Usage
-
-### Agent Commands
-
-The agent runs as a background daemon connecting to the make87 backend via WebSocket to sync instructions, logs, and updates.
+#### Build All Components
 
 ```bash
-# Run the agent interactively
-gravity agent run
+# Clone the repository
+git clone https://github.com/make87/make87.git
+cd make87
 
-# Run the agent in headless mode (non-interactive)
-gravity agent run --headless
+# Build both binaries
+cargo build --release --workspace
 
-# Install the agent as a system service
-gravity agent install
-
-# Check service status
-gravity agent status
-
-# Uninstall the agent service
-gravity agent uninstall
+# Install binaries
+sudo cp target/release/m87 /usr/local/bin/
+sudo cp target/release/m87-server /usr/local/bin/
 ```
 
-Optional flags for `run` and `install`:
+#### Build Individual Components
 
 ```bash
---user-email <email>
---organization-id <org_id>
+# Build only the client
+cargo build --release -p m87-client
+
+# Build only the server
+cargo build --release -p m87-server
 ```
 
-### Application Commands
+## Quick Start
+
+### Client (m87)
 
 ```bash
-# Build an application (defaults to current directory)
-gravity app build [path]
+# Log in to make87
+m87 auth login
 
-# Push an application to the registry
-gravity app push <name> [--version <version>]
+# Run the agent
+m87 agent run
 
-# Run an application with optional args
-gravity app run <name> [-- args...]
+# Check version
+m87 version
 ```
 
-### Stack Commands
+See [m87-client/README.md](./m87-client/README.md) for detailed usage.
+
+### Server (m87-server)
 
 ```bash
-# Pull a compose by reference (name:version)
-gravity stack pull <name>:<version>
-
-# Run and watch a compose (apply updates)
-gravity stack watch <name>
+# Start the server
+m87-server
 ```
 
-### Authentication Commands
-
-```bash
-# Log in via OAuth or stored credentials
-gravity auth login
-
-# Register a new user or organization
-gravity auth register [--user-email <email>] [--organization-id <org_id>]
-
-# Show authentication status
-gravity auth status
-
-# Log out and clear credentials
-gravity auth logout
-```
-
-### Other Commands
-
-```bash
-# Update gravity to the latest version
-gravity update
-
-# Show version info
-gravity version
-```
-
-## Architecture
-
-Modules overview:
-
-- **agent** – Agent runtime and system service logic
-- **app** – Application build/push/run handling
-- **stack** – Stack synchronization and watcher
-- **auth** – Login, registration, and token management
-- **update** – Self-update logic
-- **config** – Config file management
-- **server / util** – Shared backend and helper utilities
-
-## Configuration
-
-Configuration is stored in:
-
-- **Linux/macOS**: `~/.config/gravity/config.json`
-- **Windows**: `%APPDATA%\gravity\config.json`
-
-Example:
-
-```json
-{
-  "api_url": "https://api.make87.com",
-  "node_id": null,
-  "log_level": "info"
-}
-```
+See [m87-server/README.md](./m87-server/README.md) for detailed configuration.
 
 ## Development
 
-### Build
+### Project Structure
 
-```bash
-cargo build
+```
+make87/
+├── m87-client/         # Client CLI and agent
+├── m87-server/         # Server component
+├── Cargo.toml          # Workspace configuration
+└── README.md           # This file
 ```
 
-### Test
+### Building
 
 ```bash
-cargo test
+# Build all components
+cargo build --workspace
+
+# Run tests
+cargo test --workspace
+
+# Check formatting
+cargo fmt --check
+
+# Run clippy
+cargo clippy --workspace
 ```
 
-### Run
+### Running Locally
 
 ```bash
-cargo run -- [command]
+# Run client
+cargo run -p m87-client -- [command]
+
+# Run server
+cargo run -p m87-server
 ```
+
+## Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+
+## License
+
+Apache-2.0 - See [LICENSE](./LICENSE) for details.
+
+## Support
+
+- **Documentation**: [docs.make87.com](https://docs.make87.com)
+- **Issues**: [GitHub Issues](../../issues)
+- **Community**: [Discord](https://discord.gg/make87)
