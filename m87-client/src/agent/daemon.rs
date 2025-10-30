@@ -289,8 +289,3 @@ pub async fn report_node_details(api_url: &str, node_id: &str, token: &str) -> R
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
