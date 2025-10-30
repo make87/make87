@@ -22,7 +22,7 @@ pub async fn container_terminal_handler(container_name: String, ws: WebSocket) {
         pty.resize(Size::new(24, 80)).ok(); // set initial terminal size (24x80)
         let mut cmd = pty_process::Command::new("docker");
         cmd = cmd.args(["exec", "-it", &container_name, shell]);
-        let mut child = cmd.spawn(pts);
+        let child = cmd.spawn(pts);
 
         match child {
             Ok(chld) => {

@@ -4,6 +4,229 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g., 1.2.3 or 1.2.3-rc1)"
+        description: 'Release version (e.g., 1.2.3 or 1.2.3-rc1)'
         required: true
         type: string
+
+permissions:
+  contents: write
+
+jobs:
+  update-version:
+    name: Update Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate-version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate and set version
+        id: validate-version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "Requested version: $VERSION"
+
+          # Validate version follows semver 2.0
+          # Supports: 1.2.3, 1.2.3-rc1, 1.2.3-beta.1, etc.
+          if [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Version is valid: $VERSION"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Error: Version does not match semver pattern (x.y.z or x.y.z-prerelease)"
+            exit 1
+          fi
+
+      - name: Update version in m87-client/Cargo.toml
+        run: |
+          VERSION="${{ steps.validate-version.outputs.version }}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" m87-client/Cargo.toml
+          echo "Updated m87-client/Cargo.toml to version $VERSION"
+          cat m87-client/Cargo.toml | grep "^version"
+
+      - name: Update version in m87-server/Cargo.toml
+        run: |
+          VERSION="${{ steps.validate-version.outputs.version }}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" m87-server/Cargo.toml
+          echo "Updated m87-server/Cargo.toml to version $VERSION"
+          cat m87-server/Cargo.toml | grep "^version"
+
+      - name: Update Cargo.lock
+        run: |
+          cargo update --workspace
+
+      - name: Commit version updates
+        run: |
+          VERSION="${{ steps.validate-version.outputs.version }}"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add m87-client/Cargo.toml m87-server/Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to $VERSION" || echo "No changes to commit"
+          git push || echo "No changes to push"
+
+  build:
+    name: Build Binaries
+    needs: update-version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+        package:
+          - m87-client
+          - m87-server
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Pull latest changes
+        run: git pull origin ${{ github.ref_name }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build ${{ matrix.package }} for ${{ matrix.target }}
+        run: |
+          cross build --release --package ${{ matrix.package }} --target ${{ matrix.target }}
+
+      - name: Determine binary name
+        id: binary-info
+        run: |
+          if [ "${{ matrix.package }}" = "m87-client" ]; then
+            BINARY_NAME="m87"
+          else
+            BINARY_NAME="m87-server"
+          fi
+          echo "binary_name=$BINARY_NAME" >> $GITHUB_OUTPUT
+
+      - name: Rename and prepare binary
+        run: |
+          BINARY_NAME="${{ steps.binary-info.outputs.binary_name }}"
+          TARGET="${{ matrix.target }}"
+
+          # Copy binary to a standardized location
+          mkdir -p dist
+          cp target/$TARGET/release/$BINARY_NAME dist/${BINARY_NAME}-${TARGET}
+
+          # Make it executable
+          chmod +x dist/${BINARY_NAME}-${TARGET}
+
+          # Show info (optimized with LTO, stripped, with safety checks)
+          echo "Binary: ${BINARY_NAME}-${TARGET}"
+          ls -lh dist/${BINARY_NAME}-${TARGET}
+          file dist/${BINARY_NAME}-${TARGET}
+          echo "Size: $(du -h dist/${BINARY_NAME}-${TARGET} | cut -f1)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.binary-info.outputs.binary_name }}-${{ matrix.target }}
+          path: dist/${{ steps.binary-info.outputs.binary_name }}-${{ matrix.target }}
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    needs: [update-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+
+      - name: Add install script to release
+        run: |
+          cp install.sh release-assets/
+          echo "Added install.sh to release assets"
+          ls -lh release-assets/install.sh
+
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          sha256sum * > checksums.txt
+          echo "Generated checksums:"
+          cat checksums.txt
+
+      - name: Determine if this is the highest version
+        id: version-compare
+        run: |
+          NEW_VERSION="${{ needs.update-version.outputs.version }}"
+          echo "New version: $NEW_VERSION"
+
+          # If it's a prerelease (contains '-'), it should never be 'latest'
+          if [[ $NEW_VERSION == *-* ]]; then
+            echo "Version contains prerelease suffix, will not mark as latest"
+            echo "is_highest=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Fetch all tags and filter for stable versions only (no '-' in version)
+          git fetch --tags
+          EXISTING_VERSIONS=$(git tag -l 'v*' | grep -v '-' | sed 's/^v//' || true)
+
+          if [ -z "$EXISTING_VERSIONS" ]; then
+            echo "No existing stable versions found, this will be the first latest"
+            echo "is_highest=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Add the new version to the list and sort
+          ALL_VERSIONS=$(echo -e "$EXISTING_VERSIONS\n$NEW_VERSION")
+          HIGHEST_VERSION=$(echo "$ALL_VERSIONS" | sort -V | tail -n 1)
+
+          echo "All existing stable versions:"
+          echo "$EXISTING_VERSIONS"
+          echo "Highest version after sort: $HIGHEST_VERSION"
+
+          if [ "$HIGHEST_VERSION" = "$NEW_VERSION" ]; then
+            echo "This is the highest version, will mark as latest"
+            echo "is_highest=true" >> $GITHUB_OUTPUT
+          else
+            echo "This is not the highest version (highest: $HIGHEST_VERSION), will not mark as latest"
+            echo "is_highest=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.update-version.outputs.version }}
+          name: Release v${{ needs.update-version.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(needs.update-version.outputs.version, '-') }}
+          make-latest: ${{ steps.version-compare.outputs.is_highest == 'true' }}
+          files: release-assets/*
+          generate_release_notes: true
+          body: |
+            ## Release v${{ needs.update-version.outputs.version }}
+
+            ### Binaries
+            This release includes the following binaries for Linux:
+
+            **m87 (client)**
+            - `m87-x86_64-unknown-linux-gnu` - x86_64/AMD64 architecture
+            - `m87-aarch64-unknown-linux-gnu` - ARM64 architecture
+
+            **m87-server**
+            - `m87-server-x86_64-unknown-linux-gnu` - x86_64/AMD64 architecture
+            - `m87-server-aarch64-unknown-linux-gnu` - ARM64 architecture
+
+            Download the appropriate binary for your system architecture.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
