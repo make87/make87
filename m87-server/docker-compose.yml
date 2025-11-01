@@ -1,16 +1,16 @@
 services:
-  nexus:
+  m87-server:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: nexus
+    container_name: m87-server
     restart: always
     environment:
       - MONGO_URI=mongodb://mongo:27017
-      - MONGO_DB=nexus
+      - MONGO_DB=m87-server
       - OAUTH_ISSUER=${OAUTH_ISSUER:-https://auth.make87.com}
       - OAUTH_AUDIENCE=${OAUTH_AUDIENCE:-https://api.make87.com}
-      - PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-nexus.localhost}
+      - PUBLIC_ADDRESS=${PUBLIC_ADDRESS:-localhost}
       - FORWARD_SECRET=${FORWARD_SECRET:-dev_secret_change_me}
       - UNIFIED_PORT=${UNIFIED_PORT:-8080}
       - REST_PORT=${REST_PORT:-8081}
@@ -36,6 +36,9 @@ services:
       - mongo-data:/data/db
     networks:
       - nexus-network
+    profiles:
+      - default
+      - mongo-only
 
 networks:
   nexus-network:

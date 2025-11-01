@@ -5,10 +5,18 @@ use axum::{
     Router,
 };
 use futures::StreamExt;
+use rustls::{
+    crypto::ring::default_provider,
+    pki_types::{CertificateDer, PrivateKeyDer},
+};
+use rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig};
 use std::{sync::Arc, time::Duration};
-use tokio::io::{self, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio_rustls::server::TlsStream;
+use tokio::{
+    io::{self, AsyncWriteExt, BufReader},
+    task::JoinHandle,
+};
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tokio_rustls_acme::{caches::DirCache, AcmeConfig};
 use tokio_stream::wrappers::TcpListenerStream;
 use tower_http::{
@@ -28,6 +36,7 @@ use crate::{
     response::{NexusError, NexusResult},
     util::{app_state::AppState, tcp_proxy::proxy_bidirectional},
 };
+use rcgen::{generate_simple_self_signed, Certificate, CertificateParams};
 use tokio_yamux::{Config as YamuxConfig, Session};
 
 async fn get_status() -> impl IntoResponse {
@@ -35,6 +44,10 @@ async fn get_status() -> impl IntoResponse {
 }
 
 pub async fn serve(db: Arc<Mongo>, relay: Arc<RelayState>, cfg: Arc<AppConfig>) -> NexusResult<()> {
+    // Ensure rustls has a crypto provider before anything touches TLS
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
+        .expect("failed to install ring crypto provider");
+
     let state = AppState {
         db: db.clone(),
         config: cfg.clone(),
@@ -75,77 +88,125 @@ pub async fn serve(db: Arc<Mongo>, relay: Arc<RelayState>, cfg: Arc<AppConfig>) 
         }
     });
 
-    // ===== TLS + ACME on public port =====
-    let cache_dir = "/app/certs";
-    let public = cfg.public_address.clone(); // e.g. "nexus.make87.com"
-    let control = format!("control.{public}");
+    // === TLS (ACME or self-signed) ===
+    // Don't spawn here — serve_tls_or_selfsigned already does internal spawns.
+    serve_tls_or_selfsigned(cfg.clone(), state.clone(), relay.clone()).await?;
 
+    // === Wait for REST task forever ===
+    let _ = rest_task.await;
+    Ok(())
+}
+
+async fn serve_tls_or_selfsigned(
+    cfg: Arc<AppConfig>,
+    state: AppState,
+    relay: Arc<RelayState>,
+) -> NexusResult<()> {
+    let cache_dir = "/app/certs";
+    let public = cfg.public_address.clone();
+    let control = format!("control.{public}");
     let tcp = TcpListener::bind(("0.0.0.0", cfg.unified_port))
         .await
         .expect("bind TLS");
     let incoming = TcpListenerStream::new(tcp);
 
-    // if staging exists and is 1 set to true
+    if cfg.is_staging {
+        // === Self-signed localhost mode ===
+        let ck = generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])
+            .map_err(|err| NexusError::internal_error(&format!("{}", err,)))?;
 
-    let mut tls_incoming = AcmeConfig::new([public.as_str(), control.as_str()])
-        .contact_push("mailto:admin@make87.com")
-        .cache(DirCache::new(cache_dir))
-        .directory_lets_encrypt(!state.config.is_staging)
-        .incoming(incoming, Vec::new());
+        // 2) DER forms for rustls
+        let cert_der: CertificateDer<'static> = ck.cert.der().clone().into();
 
-    info!("TLS listener (ACME) on :{}", cfg.unified_port);
+        // rcgen 0.14.5 produces PKCS#8; wrap it properly for rustls 0.23:
+        let key_bytes = ck.signing_key.serialize_der(); // Vec<u8> (PKCS#8)
+        let key_der: PrivateKeyDer<'static> =
+            PrivateKeyDer::from(PrivatePkcs8KeyDer::from(key_bytes));
 
-    let tls_state = state.clone();
-    let tls_task = tokio::spawn(async move {
-        while let Some(conn) = tls_incoming.next().await {
-            match conn {
-                Ok(mut tls) => {
-                    let state = tls_state.clone();
-                    tokio::spawn(async move {
-                        let sni = tls.get_ref().1.server_name().unwrap_or("").to_string();
-                        if sni.is_empty() {
-                            warn!("TLS no SNI; closing");
-                            let _ = tls.shutdown().await;
-                            return;
+        // 3) rustls 0.23 builder: provider + protocol versions -> then no client auth
+        let provider = Arc::new(default_provider());
+        let config = ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .map_err(|err| NexusError::internal_error(&format!("{}", err,)))?
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .map_err(|err| NexusError::internal_error(&format!("{}", err,)))?;
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+
+        tokio::spawn(async move {
+            let mut incoming = incoming;
+            while let Some(Ok(stream)) = incoming.next().await {
+                let accept = acceptor.accept(stream);
+                let state = state.clone();
+                let relay = relay.clone();
+                tokio::spawn(async move {
+                    match accept.await {
+                        Ok(mut tls) => {
+                            let sni = tls
+                                .get_ref()
+                                .1
+                                .server_name()
+                                .unwrap_or("localhost")
+                                .to_string();
+                            let _ = handle_sni(&sni, tls, &state).await;
                         }
-
-                        if sni == state.config.public_address {
-                            if let Err(e) = proxy_to_rest(&mut tls, state.config.rest_port).await {
-                                warn!("REST proxy failed: {e:?}");
-                            }
-                            return;
-                        }
-
-                        if sni == format!("control.{}", state.config.public_address) {
-                            if let Err(e) = handle_control_tunnel(
-                                state.relay.clone(),
-                                tls,
-                                &state.config.forward_secret,
-                            )
-                            .await
-                            {
-                                warn!("control tunnel failed: {e:?}");
-                            }
-                            return;
-                        }
-
-                        if let Err(e) =
-                            handle_forward_connection(state.relay.clone(), sni, tls).await
-                        {
-                            warn!("forward failed: {e:?}");
-                        }
-                    });
-                }
-                Err(e) => warn!("ACME/TLS accept error: {e:?}"),
+                        Err(e) => tracing::warn!("TLS handshake failed: {e:?}"),
+                    }
+                });
             }
-        }
-    });
+        });
+    } else {
+        // === ACME for public domain ===
+        let mut tls_incoming = AcmeConfig::new([public.as_str(), control.as_str()])
+            .contact_push(format!("mailto:{}", state.config.cert_contact))
+            .cache(DirCache::new(cache_dir))
+            .directory_lets_encrypt(!cfg.is_staging)
+            .incoming(incoming, Vec::new());
 
-    tokio::select! {
-        _ = rest_task => warn!("REST task exited"),
-        _ = tls_task => warn!("TLS task exited"),
+        tokio::spawn(async move {
+            while let Some(conn) = tls_incoming.next().await {
+                match conn {
+                    Ok(mut tls) => {
+                        let sni = tls.get_ref().1.server_name().unwrap_or("").to_string();
+                        tracing::info!("ACME TLS SNI: {}", sni);
+                        let _ = handle_sni(&sni, tls, &state).await;
+                    }
+                    Err(e) => tracing::warn!("ACME/TLS accept error: {e:?}"),
+                }
+            }
+        });
     }
     Ok(())
+}
+
+async fn handle_sni(sni: &str, mut tls: TlsStream<tokio::net::TcpStream>, state: &AppState) {
+    if sni.is_empty() {
+        warn!("TLS no SNI; closing");
+        let _ = tls.shutdown().await;
+        return;
+    }
+
+    info!("TLS SNI: {}", sni);
+
+    if sni == state.config.public_address {
+        if let Err(e) = proxy_to_rest(&mut tls, state.config.rest_port).await {
+            warn!("REST proxy failed: {e:?}");
+        }
+        return;
+    }
+
+    if sni == format!("control.{}", state.config.public_address) {
+        if let Err(e) =
+            handle_control_tunnel(state.relay.clone(), tls, &state.config.forward_secret).await
+        {
+            warn!("control tunnel failed: {e:?}");
+        }
+        return;
+    }
+
+    if let Err(e) = handle_forward_connection(state.relay.clone(), sni.to_string(), tls).await {
+        warn!("forward failed: {e:?}");
+    }
 }
 
 // === Helpers ===

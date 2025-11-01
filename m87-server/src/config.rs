@@ -16,8 +16,10 @@ pub struct AppConfig {
     pub mongo_db: String,
     pub oauth: OAuthConfig,
     pub public_address: String,
+    pub cert_contact: String,
     pub unified_port: u16,
     pub rest_port: u16,
+    pub control_port: u16,
     pub forward_secret: String,
     pub is_staging: bool,
 }
@@ -27,7 +29,7 @@ impl AppConfig {
         // Keep it simple: read from env; in prod you might use figment/envy.
         let mongo_uri =
             std::env::var("MONGO_URI").unwrap_or_else(|_| "mongodb://localhost:27017".into());
-        let mongo_db = std::env::var("MONGO_DB").unwrap_or_else(|_| "nexus".into());
+        let mongo_db = std::env::var("MONGO_DB").unwrap_or_else(|_| "m87-server".into());
         let issuer =
             std::env::var("OAUTH_ISSUER").unwrap_or_else(|_| "https://auth.make87.com".into());
         let audience =
@@ -47,14 +49,23 @@ impl AppConfig {
             .unwrap_or_else(|_| "8081".into())
             .parse()
             .unwrap();
+        let control_port = std::env::var("CONTROL_PORT")
+            .unwrap_or_else(|_| "8082".into())
+            .parse()
+            .unwrap();
+
+        let cert_contact =
+            std::env::var("CERT_CONTACT").unwrap_or_else(|_| "admin@make87.com".into());
 
         Ok(Self {
             mongo_uri,
             mongo_db,
             oauth: OAuthConfig { issuer, audience },
             public_address,
+            cert_contact,
             unified_port,
             rest_port,
+            control_port,
             forward_secret,
             is_staging,
         })

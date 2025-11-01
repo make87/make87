@@ -19,7 +19,7 @@ Stateless reverse TCP relay for secure remote access. Bridges outbound tunnels f
 ## Usage
 
 ```bash
-docker compose up --build
+docker compose --profile default up --build
 ```
 
 ## Configuration
@@ -30,10 +30,16 @@ Configuration details will be added as the server implementation progresses.
 
 For build and test instructions, see the [main README](../README.md#development).
 
-To run the server locally:
+To just run and develop the server locally you can spin up a local mongodb instance with
 
 ```bash
-todo
+docker compose --profile mongo-only up
+```
+
+and run the server through your IDE or with
+
+```bash
+cargo run
 ```
 
 ## API Documentation
