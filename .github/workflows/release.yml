@@ -259,10 +259,11 @@ jobs:
             Download the appropriate binary for your system architecture.
 
             ### Docker Images
-            Multi-arch Docker images are available at `ghcr.io/make87/m87-server` with the following tags:
-            - `${{ needs.read-version.outputs.version }}` - This specific version${{ steps.version-compare.outputs.is_highest == 'true' && ', :latest' || '' }}${{ !contains(needs.read-version.outputs.version, '-') && format(', :{0}.{1}', split(needs.read-version.outputs.version, '.')[0], split(needs.read-version.outputs.version, '.')[1]) || '' }}
+            Multi-arch Docker images are available at `ghcr.io/make87/m87-server`
 
             Supported architectures: linux/amd64, linux/arm64
+
+            See available tags at: https://github.com/make87/make87-community/pkgs/container/m87-server
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
