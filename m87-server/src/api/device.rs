@@ -56,10 +56,6 @@ async fn get_devices(
     let nodes = claims.list_with_access(&nodes_col, &pagination).await?;
     let total_count = claims.count_with_access(&nodes_col).await?;
 
-    //let (nodes_res, count_res) = join!(nodes_fut, count_fut);
-
-    //let nodes = nodes_res?;
-    //let total_count = count_res?;
     let nodes = device_docs_to_public(&nodes);
 
     Ok(ServerResponse::builder()
