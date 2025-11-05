@@ -2,12 +2,6 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      use_release_build:
-        description: 'Build Rust with --release flag (disable for faster CI testing)'
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -82,11 +76,7 @@ jobs:
 
       - name: Build ${{ matrix.package }} for ${{ matrix.arch }}
         run: |
-          if [ "${{ github.event.inputs.use_release_build }}" = "true" ]; then
-            cargo build --release --package ${{ matrix.package }}
-          else
-            cargo build --package ${{ matrix.package }}
-          fi
+          cargo build --release --package ${{ matrix.package }}
 
       - name: Determine binary name
         id: binary-info
@@ -103,16 +93,9 @@ jobs:
           BINARY_NAME="${{ steps.binary-info.outputs.binary_name }}"
           TARGET="${{ matrix.target }}"
 
-          # Determine build directory based on release flag
-          if [ "${{ github.event.inputs.use_release_build }}" = "true" ]; then
-            BUILD_DIR="release"
-          else
-            BUILD_DIR="debug"
-          fi
-
           # Copy binary to a standardized location
           mkdir -p dist
-          cp target/$BUILD_DIR/$BINARY_NAME dist/${BINARY_NAME}-${TARGET}
+          cp target/release/$BINARY_NAME dist/${BINARY_NAME}-${TARGET}
 
           # Make it executable
           chmod +x dist/${BINARY_NAME}-${TARGET}
@@ -170,8 +153,6 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: ghcr.io/make87/m87-server:${{ needs.read-version.outputs.version }}-${{ matrix.arch }}
-          build-args: |
-            BUILD_MODE=${{ github.event.inputs.use_release_build == 'true' && 'release' || 'debug' }}
           cache-from: type=registry,ref=ghcr.io/make87/m87-server:buildcache-${{ matrix.arch }}
           cache-to: type=registry,ref=ghcr.io/make87/m87-server:buildcache-${{ matrix.arch }},mode=max
 
@@ -327,40 +308,3 @@ jobs:
           done
 
           echo "Docker manifests created and pushed successfully"
-
-      - name: Set up Docker Buildx for compose publish
-        uses: docker/setup-buildx-action@v3
-
-      - name: Publish Docker Compose configuration
-        working-directory: m87-server
-        run: |
-          VERSION="${{ needs.read-version.outputs.version }}"
-          IS_HIGHEST="${{ steps.version-compare.outputs.is_highest }}"
-
-          echo "Publishing Docker Compose configuration for version: $VERSION"
-
-          # Base tags that always get created
-          TAGS="ghcr.io/make87/m87-server-compose:$VERSION"
-
-          # Add major.minor tag for stable versions (no suffix)
-          if [[ ! $VERSION == *-* ]]; then
-            MAJOR_MINOR=$(echo $VERSION | cut -d. -f1,2)
-            TAGS="$TAGS ghcr.io/make87/m87-server-compose:$MAJOR_MINOR"
-            echo "Adding major.minor tag: $MAJOR_MINOR"
-          fi
-
-          # Add latest tag only if this is the highest stable version
-          if [[ $IS_HIGHEST == "true" ]]; then
-            TAGS="$TAGS ghcr.io/make87/m87-server-compose:latest"
-            echo "Adding :latest tag"
-          fi
-
-          echo "All compose tags: $TAGS"
-
-          # Publish compose configuration for each tag
-          for TAG in $TAGS; do
-            echo "Publishing compose configuration: $TAG"
-            docker compose publish $TAG --with-env -y
-          done
-
-          echo "Docker Compose configurations published successfully"
