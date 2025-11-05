@@ -153,6 +153,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: ghcr.io/make87/m87-server:${{ needs.read-version.outputs.version }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/make87/make87
           cache-from: type=registry,ref=ghcr.io/make87/m87-server:buildcache-${{ matrix.arch }}
           cache-to: type=registry,ref=ghcr.io/make87/m87-server:buildcache-${{ matrix.arch }},mode=max
 
@@ -338,7 +340,7 @@ jobs:
           # Publish compose configuration for each tag
           for TAG in $TAGS; do
             echo "Publishing compose configuration: $TAG"
-            docker compose publish $TAG --with-env -y
+            docker compose publish --with-env -y --set "*.labels.org.opencontainers.image.source=https://github.com/make87/make87" $TAG
           done
 
           echo "Docker Compose configurations published successfully"
