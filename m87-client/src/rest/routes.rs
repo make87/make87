@@ -1,57 +1,75 @@
 use anyhow::Result;
-use warp::Filter;
+use axum::{
+    extract::{
+        ws::{WebSocket, WebSocketUpgrade},
+        Path,
+    },
+    response::{IntoResponse, Response},
+    routing::get,
+    Router,
+};
+use std::{future::Future, net::SocketAddr, pin::Pin};
+use tokio::net::TcpListener;
 
-use crate::rest::container_logs::handle_container_logs_ws;
-use crate::rest::container_terminal::handle_container_terminal_ws;
-use crate::rest::logs::handle_logs_ws;
-use crate::rest::metrics::handle_system_metrics_ws;
-use crate::rest::terminal::handle_terminal_ws;
+// import your handlers
+use crate::rest::{
+    container_logs::handle_container_logs_ws, container_terminal::handle_container_terminal_ws,
+    logs::handle_logs_ws, metrics::handle_system_metrics_ws, terminal::handle_terminal_ws,
+};
 
-pub async fn run_server(server_port: u16) -> Result<()> {
-    let logs_route = warp::path("logs").and(warp::ws()).and_then(handle_logs_ws);
-
-    let terminal_route = warp::path("terminal")
-        .and(warp::ws())
-        .and_then(handle_terminal_ws);
-
-    let metrics_route = warp::path("metrics")
-        .and(warp::ws())
-        .and_then(handle_system_metrics_ws);
-
-    let container_terminal_route = warp::path("container")
-        .and(warp::path::param::<String>())
-        .and(warp::ws())
-        .and_then(handle_container_terminal_ws);
-
-    let container_logs_route = warp::path("container-logs")
-        .and(warp::path::param::<String>())
-        .and(warp::ws())
-        .and_then(handle_container_logs_ws);
-
-    let routes = logs_route
-        .or(terminal_route)
-        .or(metrics_route)
-        .or(container_terminal_route)
-        .or(container_logs_route)
-        .recover(handle_rejection);
-
-    let _ = warp::serve(routes.with(warp::log("warp_ws_server")))
-        .run(([0, 0, 0, 0], server_port))
-        .await;
-
-    Ok(())
+pub fn build_router() -> Router {
+    Router::new()
+        .route("/logs", get(ws_upgrade(handle_logs_ws)))
+        .route("/terminal", get(ws_upgrade(handle_terminal_ws)))
+        .route("/metrics", get(ws_upgrade(handle_system_metrics_ws)))
+        .route(
+            "/container/:name",
+            get(ws_upgrade_with_param(handle_container_terminal_ws)),
+        )
+        .route(
+            "/container-logs/:name",
+            get(ws_upgrade_with_param(handle_container_logs_ws)),
+        )
 }
 
-async fn handle_rejection(
-    err: warp::Rejection,
-) -> Result<impl warp::Reply, std::convert::Infallible> {
-    if err.is_not_found() {
-        eprintln!("Route not found: {:?}", err);
-    } else {
-        eprintln!("Request failed: {:?}", err);
+/// WebSocket upgrade helper (no path params)
+fn ws_upgrade<H>(
+    handler: fn(WebSocket) -> H,
+) -> impl Fn(WebSocketUpgrade) -> Pin<Box<dyn Future<Output = Response> + Send>> + Clone + Send + 'static
+where
+    H: Future<Output = ()> + Send + 'static,
+{
+    move |ws: WebSocketUpgrade| {
+        Box::pin(async move {
+            let resp = ws.on_upgrade(handler);
+            resp.into_response()
+        })
     }
-    Ok(warp::reply::with_status(
-        "Something went wrong",
-        warp::http::StatusCode::INTERNAL_SERVER_ERROR,
-    ))
+}
+
+/// WebSocket upgrade helper (with path params)
+fn ws_upgrade_with_param<H>(
+    handler: fn(String, WebSocket) -> H,
+) -> impl Fn(Path<String>, WebSocketUpgrade) -> Pin<Box<dyn Future<Output = Response> + Send>>
+       + Clone
+       + Send
+       + 'static
+where
+    H: Future<Output = ()> + Send + 'static,
+{
+    move |Path(param): Path<String>, ws: WebSocketUpgrade| {
+        Box::pin(async move {
+            let resp = ws.on_upgrade(move |socket| handler(param.clone(), socket));
+            resp.into_response()
+        })
+    }
+}
+
+/// Start the Axum server (safe to call in a spawn loop)
+pub async fn serve_server(port: u16) -> Result<()> {
+    let app = build_router();
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = TcpListener::bind(addr).await?;
+    axum::serve(listener, app.into_make_service()).await?;
+    Ok(())
 }

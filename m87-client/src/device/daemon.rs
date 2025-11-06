@@ -1,21 +1,21 @@
 use anyhow::{Context, Result};
-use reqwest::Client;
-use serde_json::Value;
 use tokio::{
+    net::TcpListener,
     pin, signal,
     time::{sleep, Duration},
 };
 use tracing::{error, info};
 
-use std::path::Path;
 use std::process::Command;
+use std::{net::SocketAddr, path::Path};
 
 use crate::{
     auth::register_device,
     device::{services::collect_all_services, system_metrics::collect_system_metrics},
+    rest::routes::build_router,
     server,
 };
-use crate::{auth::AuthManager, config::Config, rest::serve_server, util::macchina};
+use crate::{auth::AuthManager, config::Config};
 
 use crate::server::send_heartbeat;
 use crate::util::logging::init_tracing_with_log_layer;
@@ -113,6 +113,9 @@ pub async fn run() -> Result<()> {
 
 async fn login_and_run() -> Result<()> {
     // retry login/register until wit works, then call device_loop
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
+        .expect("failed to install ring crypto provider");
+    //
     let config = Config::load().context("Failed to load configuration")?;
     let system_info = get_system_info(config.enable_geo_lookup).await?;
     loop {
@@ -132,27 +135,36 @@ async fn login_and_run() -> Result<()> {
     )
     .await;
 
-    tokio::task::spawn_local(async move {
+    let port = config.server_port.clone();
+    tokio::task::spawn(async move {
         loop {
-            println!("Starting log server...");
-            if let Err(e) = serve_server().await {
+            info!("Starting log server...");
+            let app = build_router();
+            let addr = SocketAddr::from(([0, 0, 0, 0], port));
+            let listener = TcpListener::bind(addr).await;
+            if let Err(e) = listener {
+                eprintln!("Failed to bind log server: {e}. Restarting in 2 seconds...");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+            let listener = listener.unwrap();
+            let res = axum::serve(listener, app.into_make_service()).await;
+            if let Err(e) = res {
                 eprintln!("Log server crashed with error: {e}. Restarting in 2 seconds...");
-            } else {
-                eprintln!("Log server exited normally. Restarting in 2 seconds...");
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     });
 
-    tokio::task::spawn_local(async move {
+    tokio::task::spawn(async {
         loop {
             println!("Starting control tunnel...");
             if let Err(e) = server::connect_control_tunnel().await {
-                eprintln!("Control tunnel crashed with error: {e}. Restarting in 2 seconds...");
+                eprintln!("Control tunnel crashed with error: {e}. Restarting in 10 seconds...");
             } else {
-                eprintln!("Control tunnel exited normally. Restarting in 2 seconds...");
+                eprintln!("Control tunnel exited normally. Restarting in 10 seconds...");
             }
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
 
@@ -189,6 +201,7 @@ async fn sync_with_backend() -> Result<()> {
         &token,
         metrics,
         services,
+        config.trust_invalid_server_cert,
     )
     .await?;
     info!("Sync complete");

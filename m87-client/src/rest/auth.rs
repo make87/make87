@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
+use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use warp::ws::{Message, WebSocket};
 
 use crate::config::Config;
 
@@ -69,23 +69,26 @@ pub async fn validate_token(token: &str) -> Result<Auth0Claims> {
     Ok(decoded.claims)
 }
 
-/// Expect first WS text message to contain the token (optionally prefixed with 'Bearer ')
 pub async fn validate_token_via_ws(
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
     ws_rx: &mut futures::stream::SplitStream<WebSocket>,
     send_updates: bool,
 ) -> Result<()> {
     if send_updates {
-        let _ = ws_tx.send(Message::text("Authenticating...\n\r")).await;
+        let _ = ws_tx
+            .send(Message::Text("Authenticating...\n\r".into()))
+            .await;
     }
 
-    let token_msg = ws_rx.next().await.and_then(|m| m.ok()).and_then(|m| {
-        if m.is_text() {
-            Some(m.to_str().unwrap_or("").to_string())
-        } else {
-            None
-        }
-    });
+    // Wait for first message (token)
+    let token_msg = ws_rx
+        .next()
+        .await
+        .and_then(|m| m.ok())
+        .and_then(|m| match m {
+            Message::Text(t) => Some(t.to_string()),
+            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) | Message::Close(_) => None,
+        });
 
     let token = match token_msg {
         Some(t) => t.trim_start_matches("Bearer ").to_string(),
@@ -96,8 +99,9 @@ pub async fn validate_token_via_ws(
 
     if send_updates {
         let _ = ws_tx
-            .send(Message::text("Connected successfully\n\r"))
+            .send(Message::Text("Connected successfully\n\r".into()))
             .await;
     }
+
     Ok(())
 }

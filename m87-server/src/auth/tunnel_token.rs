@@ -33,14 +33,14 @@ pub fn verify_tunnel_token(token_b64: &str, secret: &str) -> ServerResult<String
     Ok(device_id.to_string())
 }
 
-pub fn issue_tunnel_token(node_id: &str, ttl_secs: u64, secret: &str) -> ServerResult<String> {
+pub fn issue_tunnel_token(device_id: &str, ttl_secs: u64, secret: &str) -> ServerResult<String> {
     type HmacSha256 = Hmac<Sha256>;
 
     // Compute expiry timestamp (UTC seconds)
     let expiry = Utc::now().timestamp() + ttl_secs as i64;
 
     // Payload = node_id|expiry
-    let payload = format!("{}|{}", node_id, expiry);
+    let payload = format!("{}|{}", device_id, expiry);
 
     // Compute HMAC signature
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())

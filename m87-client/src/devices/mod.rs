@@ -9,18 +9,18 @@ pub async fn list_devices() -> Result<Vec<PublicDevice>> {
     server::list_devices(&config.api_url, &token, config.trust_invalid_server_cert).await
 }
 
-pub async fn metrics(device_id: &str) -> Result<()> {
+pub async fn metrics(_device_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn logs(device_id: &str) -> Result<()> {
+pub async fn logs(_device_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_ssh_url(device_id: &str) -> Result<String> {
+pub async fn get_ssh_url(_device_id: &str) -> Result<String> {
     Ok(String::new())
 }
 
-pub async fn connect_ssh(device_id: &str) -> Result<()> {
+pub async fn connect_ssh(_device_id: &str) -> Result<()> {
     Ok(())
 }

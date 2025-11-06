@@ -187,7 +187,7 @@ pub async fn request_control_tunnel_token(
     }
     match res.unwrap().error_for_status() {
         Ok(r) => {
-            let control_token = r.text().await?;
+            let control_token = r.text().await?.trim_matches('"').to_string();
             Ok(control_token)
         }
         Err(e) => {
@@ -211,15 +211,14 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     .await?;
 
     // 1. TCP connect
-    // prepend control to the api hsot name e.g. https://server.make87.com to https://control.server.make87.com
-    let api_url = format!(
-        "https://control.{}",
+    let control_host = format!(
+        "control.{}",
         config
             .api_url
             .trim_start_matches("https://")
             .trim_start_matches("http://")
     );
-    let tcp = TcpStream::connect((api_url.clone(), 443)).await?;
+    let tcp = TcpStream::connect((control_host.clone(), 443)).await?;
 
     // 2. Root store (use system roots or webpki)
     let mut root_store = RootCertStore::empty();
@@ -248,12 +247,7 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
 
     // 4. TLS handshake (SNI)
     let connector = TlsConnector::from(tls_config);
-    let domain = config
-        .api_url
-        .clone()
-        .replace("https://", "")
-        .replace("http://", "");
-    let server_name = ServerName::try_from(domain).context("invalid SNI name")?;
+    let server_name = ServerName::try_from(control_host).context("invalid SNI name")?;
     let mut tls = connector.connect(server_name, tcp).await?;
 
     // 4. Send handshake line
@@ -268,38 +262,36 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     // create client session
     let mut sess = Session::new_client(tls, YamuxConfig::default());
     // continuously poll session to handle keep-alives, frame exchange
-    tokio::spawn(async move {
-        while let Some(Ok(mut stream)) = sess.next().await {
-            tokio::spawn(async move {
-                // header with port number
-                let mut buf = [0u8; 16];
-                if let Ok(n) = stream.peek(&mut buf).await {
-                    let port: u16 = String::from_utf8_lossy(&buf[..n])
-                        .trim()
-                        .parse()
-                        .unwrap_or(0);
-                    if port > 0 {
-                        if let Ok(mut local) = TcpStream::connect(("127.0.0.1", port)).await {
-                            let _ = match io::copy_bidirectional(&mut stream, &mut local).await {
-                                Ok((_a, _b)) => {
-                                    info!("proxy session closed cleanly ");
-                                    let _ = stream.shutdown().await;
-                                    let _ = local.shutdown().await;
-                                    Ok(())
-                                }
-                                Err(e) => {
-                                    info!("proxy session closed with error ");
-                                    let _ = stream.shutdown().await;
-                                    let _ = local.shutdown().await;
-                                    Err(e)
-                                }
-                            };
-                        }
+    while let Some(Ok(mut stream)) = sess.next().await {
+        tokio::spawn(async move {
+            // header with port number
+            let mut buf = [0u8; 16];
+            if let Ok(n) = stream.peek(&mut buf).await {
+                let port: u16 = String::from_utf8_lossy(&buf[..n])
+                    .trim()
+                    .parse()
+                    .unwrap_or(0);
+                if port > 0 {
+                    if let Ok(mut local) = TcpStream::connect(("127.0.0.1", port)).await {
+                        let _ = match io::copy_bidirectional(&mut stream, &mut local).await {
+                            Ok((_a, _b)) => {
+                                info!("proxy session closed cleanly ");
+                                let _ = stream.shutdown().await;
+                                let _ = local.shutdown().await;
+                                Ok(())
+                            }
+                            Err(e) => {
+                                info!("proxy session closed with error ");
+                                let _ = stream.shutdown().await;
+                                let _ = local.shutdown().await;
+                                Err(e)
+                            }
+                        };
                     }
                 }
-            });
-        }
-    });
+            }
+        });
+    }
     // register / run streams as needed
     Ok(())
 }
@@ -311,6 +303,7 @@ pub async fn send_heartbeat(
     token: &str,
     metrics: SystemMetrics,
     services: Vec<ServiceInfo>,
+    trust_invalid_server_cert: bool,
 ) -> Result<HeartbeatResponse> {
     let req = HeartbeatRequest {
         last_instruction_hash: last_instruction_hash.to_string(),
@@ -318,7 +311,7 @@ pub async fn send_heartbeat(
         services,
     };
 
-    let client = reqwest::Client::new();
+    let client = get_client(trust_invalid_server_cert)?;
     let url = format!("{}/device/{}/heartbeat", api_url, device_id);
 
     let resp = client
@@ -408,6 +401,12 @@ impl ServerCertVerifier for NoVerify {
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![SignatureScheme::RSA_PKCS1_SHA256]
+        vec![
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ED25519,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA256,
+        ]
     }
 }

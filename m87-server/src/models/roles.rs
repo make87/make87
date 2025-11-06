@@ -47,16 +47,21 @@ impl RoleDoc {
     /// Create or update a role binding for a user and scope
     pub async fn create(db: &Arc<Mongo>, body: CreateRoleBinding) -> ServerResult<Self> {
         let now = DateTime::now();
-        // Avoid duplicates for same (user, scope)
+
         let filter = doc! {
             "reference_id": &body.reference_id,
             "scope": &body.scope,
         };
 
+        // ensure complete doc and clean updates
         let update = doc! {
             "$set": {
-                "scope": &body.scope,
                 "role": role_to_bson(&body.role),
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "reference_id": &body.reference_id,
+                "scope": &body.scope,
                 "created_at": now,
             }
         };
@@ -73,8 +78,6 @@ impl RoleDoc {
             .await
             .map_err(|_| ServerError::internal_error("Failed to upsert role binding"))?;
 
-        // If Mongo didn’t return the new doc (shouldn’t happen with ReturnDocument::After),
-        // synthesize it locally.
         Ok(updated.unwrap())
     }
 
@@ -118,9 +121,9 @@ impl RoleDoc {
     }
 
     /// Delete a specific binding (admin)
-    pub async fn delete(db: &Arc<Mongo>, user_id: &str, scope: &str) -> ServerResult<()> {
+    pub async fn delete(db: &Arc<Mongo>, reference_id: &str, scope: &str) -> ServerResult<()> {
         db.roles()
-            .delete_one(doc! { "user_id": user_id, "scope": scope })
+            .delete_one(doc! { "reference_id": reference_id, "scope": scope })
             .await
             .map_err(|_| ServerError::internal_error("Failed to delete role binding"))?;
         Ok(())

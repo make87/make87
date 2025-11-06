@@ -244,8 +244,16 @@ pub async fn handle_control_tunnel(
 
     match crate::auth::tunnel_token::verify_tunnel_token(&token, secret) {
         Ok(id_ok) if id_ok == device_id => {}
-        _ => {
-            warn!("control: token invalid or mismatched");
+        Ok(id_ok) => {
+            warn!(
+                "control: token mismatch got {} but expected {}",
+                device_id, id_ok
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            // print error message
+            warn!("control: token invalid {}", err);
             return Ok(());
         }
     }
@@ -268,6 +276,9 @@ async fn handle_forward_connection(
     host: String,
     mut inbound: TlsStream<tokio::net::TcpStream>,
 ) -> ServerResult<()> {
+    // split by . and get firt. then check if ther eis a device with that shortid
+    // if yes forard to node rest
+
     // ACL
     if let Ok(peer) = inbound.get_ref().0.peer_addr() {
         if let Some(meta) = relay.forwards.read().await.get(&host).cloned() {

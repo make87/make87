@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::server;
-use crate::util::macchina;
 
 pub const OWNER_REFERENCE_ENV_VAR: &str = "OWNER_REFERENCE";
 pub const API_KEY_ENV_VAR: &str = "M87_API_KEY";
@@ -235,13 +234,6 @@ impl AuthManager {
     pub fn has_device_credentials() -> Result<bool> {
         Ok(APIConfig::load_or_create()?.device_credentials.is_some())
     }
-}
-
-fn get_host_name() -> Result<String> {
-    let hostname_result = hostname::get()?;
-
-    let name = hostname_result.to_string_lossy().into_owned();
-    Ok(name)
 }
 
 pub async fn login_cli() -> Result<()> {

@@ -10,6 +10,7 @@ use rand::{distributions::Alphanumeric, Rng};
 use rand_core::OsRng; // secure random salt source
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKeyDoc {
@@ -29,7 +30,7 @@ pub struct ApiKeyDoc {
 pub struct CreateApiKey {
     pub name: String,
     pub ttl_secs: Option<i64>,
-    pub scopes: Vec<String>,
+    pub scopes: Vec<(String, Role)>,
 }
 
 impl ApiKeyDoc {
@@ -61,15 +62,21 @@ impl ApiKeyDoc {
             .map_err(|_| ServerError::internal_error("Failed to insert API key"))?;
 
         // for each scope add a role in parallel
-        let _ = futures::future::join_all(req.scopes.into_iter().map(|scope| {
-            RoleDoc::create(
-                db,
-                CreateRoleBinding {
-                    reference_id: doc.key_id.clone(),
-                    role: Role::Editor,
-                    scope,
-                },
-            )
+        let _ = futures::future::join_all(req.scopes.into_iter().map(|(scope, role)| {
+            let key = doc.key_id.clone();
+            async move {
+                info!("Creating role binding for scope: {}", scope);
+                let _ = RoleDoc::create(
+                    db,
+                    CreateRoleBinding {
+                        reference_id: key,
+                        role,
+                        scope: scope.clone(),
+                    },
+                )
+                .await;
+                info!("Role binding created for scope: {}", scope);
+            }
         }))
         .await;
 

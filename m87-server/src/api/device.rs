@@ -1,6 +1,7 @@
 use axum::extract::{Path, State};
 use axum::routing::post;
 use axum::{routing::get, Json, Router};
+use m87_shared::forward::{CreateForward, PublicForward};
 use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
 
@@ -9,6 +10,7 @@ use crate::auth::tunnel_token::issue_tunnel_token;
 use crate::models::device::{
     DeviceDoc, HeartbeatRequest, HeartbeatResponse, PublicDevice, UpdateDeviceBody,
 };
+use crate::models::forward::ForwardDoc;
 use crate::models::roles::Role;
 use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
 use crate::util::app_state::AppState;
@@ -28,8 +30,12 @@ pub fn create_route() -> Router<AppState> {
         .route("/{id}/terminal", get(get_terminal_websocket))
         .route("/{id}/metrics", get(get_metrics_websocket))
         .route("/{id}/ssh", get(get_device_ssh))
-        // .route("/{id}/forward", get(get_port_forward))
         .route("/{id}/token", get(get_tunnel_token))
+        .route("/{id}/forward", get(get_forwards).post(create_forward))
+        .route(
+            "/{id}/forward/{target_port}",
+            get(get_forward).delete(delete_forward),
+        )
 }
 
 async fn get_tunnel_token(
@@ -251,4 +257,96 @@ async fn get_metrics_websocket(
     let command = device.get_metrics_url(None, &state).await?;
     let res = ServerResponse::builder().body(command).ok().build();
     Ok(res)
+}
+
+async fn get_forwards(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    pagination: RequestPagination,
+) -> ServerAppResult<Vec<PublicForward>> {
+    let device = claims
+        .find_one_with_scope_and_role::<DeviceDoc>(
+            &state.db.devices(),
+            doc! { "_id": ObjectId::parse_str(&id)? },
+            Role::Viewer,
+        )
+        .await?
+        .ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    let forwards = ForwardDoc::list_for_device(&state.db, &device.id.unwrap(), pagination).await?;
+    let res: Vec<PublicForward> = forwards.into_iter().map(Into::into).collect();
+    Ok(ServerResponse::builder()
+        .body(res)
+        .pagination(ResponsePagination {
+            count: total_count,
+            offset: pagination.offset,
+            limit: pagination.limit,
+        })
+        .ok()
+        .build())
+}
+
+async fn create_forward(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateForward>,
+) -> ServerAppResult<PublicForward> {
+    let _ = claims
+        .find_one_with_scope_and_role::<DeviceDoc>(
+            &state.db.devices(),
+            doc! { "_id": ObjectId::parse_str(&id)? },
+            Role::Editor,
+        )
+        .await?
+        .ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    let updated = ForwardDoc::create_or_update(&state.db, body).await?;
+    let res: PublicForward = updated.into();
+
+    Ok(ServerResponse::builder().body(res).ok().build())
+}
+
+async fn get_forward(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path((id, target_port)): Path<(String, u16)>,
+) -> ServerAppResult<PublicForward> {
+    let device = claims
+        .find_one_with_scope_and_role::<DeviceDoc>(
+            &state.db.devices(),
+            doc! { "_id": ObjectId::parse_str(&id)? },
+            Role::Viewer,
+        )
+        .await?
+        .ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    let forwards = ForwardDoc::list_for_device(&state.db, &device.id.unwrap()).await?;
+    let target_port = target_port as u32;
+    let forward = forwards
+        .into_iter()
+        .find(|f| f.target_port == target_port)
+        .ok_or_else(|| ServerError::not_found("Forward not found"))?;
+
+    Ok(ServerResponse::builder().body(forward.into()).ok().build())
+}
+
+async fn delete_forward(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path((id, target_port)): Path<(String, u16)>,
+) -> ServerAppResult<()> {
+    let device = claims
+        .find_one_with_scope_and_role::<DeviceDoc>(
+            &state.db.devices(),
+            doc! { "_id": ObjectId::parse_str(&id)? },
+            Role::Editor,
+        )
+        .await?
+        .ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    ForwardDoc::delete(&state.db, &device.id.unwrap(), target_port).await?;
+
+    Ok(ServerResponse::builder().body(()).ok().build())
 }

@@ -1,26 +1,32 @@
 use crate::rest::auth::validate_token_via_ws;
 use crate::rest::shared::acquire_process_task;
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::{SinkExt, StreamExt};
-use warp::ws::{Message, WebSocket, Ws};
+use tracing::error;
 
-pub async fn container_logs_handler(container: String, ws: WebSocket) {
-    let (mut ws_tx, mut ws_rx) = ws.split();
+pub async fn handle_container_logs_ws(container_name: String, socket: WebSocket) {
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // Authenticate
     if let Err(e) = validate_token_via_ws(&mut ws_tx, &mut ws_rx, true).await {
-        eprintln!("auth failed: {}", e);
+        error!("auth failed: {}", e);
         return;
     }
 
+    // Spawn docker logs -f process
     let (task, mut rx) = acquire_process_task(
-        &format!("container-logs:{}", container),
+        &format!("container-logs:{container_name}"),
         "docker",
-        &["logs", "-f", "--tail", "1000", &container],
+        &["logs", "-f", "--tail", "1000", &container_name],
     )
     .await;
 
+    // Forward process output → WebSocket
     let forward = tokio::spawn(async move {
         while let Ok(line) = rx.recv().await {
+            let msg = format!("{line}");
             if ws_tx
-                .send(Message::text(format!("{}\r\n", line)))
+                .send(Message::Text(Utf8Bytes::from(msg)))
                 .await
                 .is_err()
             {
@@ -29,23 +35,14 @@ pub async fn container_logs_handler(container: String, ws: WebSocket) {
         }
     });
 
-    while let Some(msg) = ws_rx.next().await {
-        if let Ok(m) = msg {
-            if m.is_close() {
-                break;
-            }
-        } else {
-            break;
+    // Wait for close or disconnect
+    while let Some(Ok(msg)) = ws_rx.next().await {
+        match msg {
+            Message::Close(_) => break,
+            _ => {}
         }
     }
 
     forward.abort();
     task.dec_or_shutdown();
-}
-
-pub async fn handle_container_logs_ws(
-    container_name: String,
-    ws: Ws,
-) -> Result<impl warp::Reply, std::convert::Infallible> {
-    Ok(ws.on_upgrade(move |socket| container_logs_handler(container_name, socket)))
 }

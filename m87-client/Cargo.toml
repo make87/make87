@@ -32,11 +32,11 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
 sha1 = { workspace = true }
-warp = { workspace = true }
 futures = { workspace = true }
 dashmap = { workspace = true }
 jsonwebtoken = { workspace = true }
 once_cell = { workspace = true }
+axum = { version = "0.8.6", features = ["ws", "macros"] }
 
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }

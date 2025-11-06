@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use m87_shared::forward::{CreateForward, ForwardAccess};
 use mongodb::bson::{doc, oid::ObjectId, DateTime, Document};
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ pub use m87_shared::config::DeviceClientConfig;
 pub use m87_shared::device::{DeviceSystemInfo, PublicDevice};
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
 
+use crate::models::forward::ForwardDoc;
 use crate::{
     auth::{access_control::AccessControlled, claims::Claims},
     db::Mongo,
@@ -140,7 +142,20 @@ impl DeviceDoc {
             instruction_hash: 0,
             api_key_id: create_body.api_key_id,
         };
-        let _ = db.devices().insert_one(node).await?;
+        let _ = db.devices().insert_one(node.clone()).await?;
+
+        // add default forward rest to config rest port with Auth as default auth
+        let _ = ForwardDoc::create_or_update(
+            db,
+            CreateForward {
+                device_id: device_id.to_string(),
+                device_short_id: node.short_id,
+                name: Some("Websockets".to_string()),
+                target_port: node.config.server_port as u16,
+                access: ForwardAccess::Auth,
+            },
+        )
+        .await?;
 
         Ok(())
     }
@@ -148,6 +163,7 @@ impl DeviceDoc {
     pub async fn remove_device(&self, claims: &Claims, db: &Arc<Mongo>) -> ServerResult<()> {
         let api_keys_col = db.api_keys();
         let roles_col = db.roles();
+        let forwards_col = db.forwards();
 
         // Delete associated API keys
         api_keys_col
@@ -160,6 +176,12 @@ impl DeviceDoc {
             .delete_many(doc! { "reference_id": self.api_key_id })
             .await
             .map_err(|_| ServerError::internal_error("Failed to delete roles"))?;
+
+        // remove forwards
+        forwards_col
+            .delete_many(doc! { "device_id": self.id.clone().unwrap().to_string() })
+            .await
+            .map_err(|_| ServerError::internal_error("Failed to delete forwards"))?;
 
         // Check access and delete device
         let success = claims

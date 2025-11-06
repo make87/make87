@@ -107,9 +107,12 @@ async fn check_auth_request(
             name: format!("{}-key", request.device_info.hostname),
             ttl_secs: None, // for now never expire
             scopes: vec![
-                format!("device:{}", request.device_id.clone()),
-                // grant access to all the owners pub ssh keys
-                format!("ssh:{}", owner_id),
+                (
+                    format!("device:{}", request.device_id.clone()),
+                    Role::Editor,
+                ),
+                // grant read access to all the owners pub ssh keys
+                (format!("ssh:{}", owner_id), Role::Viewer),
             ],
         },
     )

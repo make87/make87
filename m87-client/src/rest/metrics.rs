@@ -1,38 +1,34 @@
 use crate::rest::shared::acquire_metrics_task;
-
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::{SinkExt, StreamExt};
-use warp::ws::{Message, WebSocket, Ws};
 
-pub async fn system_metrics_handler(ws: WebSocket) {
-    // If you want auth, call validate_token_via_ws here.
-    let (mut ws_tx, mut ws_rx) = ws.split();
+pub async fn handle_system_metrics_ws(socket: WebSocket) {
+    let (mut ws_tx, mut ws_rx) = socket.split();
 
+    // Start metrics collection task
     let (task, mut rx) = acquire_metrics_task("system-metrics").await;
 
+    // Spawn a forwarder for metric updates
     let forward = tokio::spawn(async move {
         while let Ok(json) = rx.recv().await {
-            if ws_tx.send(Message::text(json)).await.is_err() {
+            if ws_tx
+                .send(Message::Text(Utf8Bytes::from(json)))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
     });
 
-    while let Some(msg) = ws_rx.next().await {
-        if let Ok(m) = msg {
-            if m.is_close() {
-                break;
-            }
-        } else {
-            break;
+    // Wait for client close or disconnect
+    while let Some(Ok(msg)) = ws_rx.next().await {
+        match msg {
+            Message::Close(_) => break,
+            _ => {}
         }
     }
 
     forward.abort();
     task.dec_or_shutdown();
-}
-
-pub async fn handle_system_metrics_ws(
-    ws: Ws,
-) -> Result<impl warp::Reply, std::convert::Infallible> {
-    Ok(ws.on_upgrade(move |socket| system_metrics_handler(socket)))
 }

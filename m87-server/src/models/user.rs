@@ -32,33 +32,39 @@ impl UserDoc {
         config: &Arc<AppConfig>,
     ) -> ServerResult<UserDoc> {
         let collection = db.users();
-
         let claims = validate_token(token, config).await?;
-        // find by sub
-        let user = collection.find_one(doc! { "sub": &claims.sub }).await?;
 
-        let user = match user {
-            Some(user) => user,
-            None => {
-                let (email, name) = get_email_and_name_from_token(token, config).await?;
-
-                let new_user = UserDoc {
-                    id: None,
-                    name,
-                    email,
-                    sub: claims.sub.clone(),
-                    approved: !config.users_need_approval,
-                    created_at: Some(DateTime::now()),
-                    last_login: None,
-                    total_logins: 0,
-                };
-
-                collection.insert_one(new_user.clone()).await?;
-                new_user
-            }
+        // Prepare update
+        let now = DateTime::now();
+        let filter = doc! { "sub": &claims.sub };
+        let update = doc! {
+            "$set": { "last_login": &now },
+            "$inc": { "total_logins": 1 }
         };
 
-        Ok(user)
+        // Try to update existing user and return it
+        if let Some(user) = collection
+            .find_one_and_update(filter.clone(), update.clone())
+            .await?
+        {
+            return Ok(user);
+        }
+
+        // Otherwise create new user
+        let (email, name) = get_email_and_name_from_token(token, config).await?;
+        let new_user = UserDoc {
+            id: None,
+            name,
+            email,
+            sub: claims.sub.clone(),
+            approved: !config.users_need_approval,
+            created_at: Some(now.clone()),
+            last_login: Some(now),
+            total_logins: 1,
+        };
+
+        collection.insert_one(new_user.clone()).await?;
+        Ok(new_user)
     }
 
     pub fn get_reference_id(&self) -> String {

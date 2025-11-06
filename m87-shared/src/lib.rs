@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod config;
 pub mod device;
+pub mod forward;
 pub mod heartbeat;
 pub mod metrics;
 pub mod pagination;

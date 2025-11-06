@@ -1,24 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde_json::Value;
-use tokio::{
-    pin, signal,
-    time::{sleep, Duration},
-};
-use tracing::{error, info};
 
-use std::path::Path;
 use std::process::Command;
 
-use crate::{
-    auth::register_device,
-    device::{services::collect_all_services, system_metrics::collect_system_metrics},
-    server,
-};
-use crate::{auth::AuthManager, config::Config, rest::serve_server, util::macchina};
-
-use crate::server::send_heartbeat;
-use crate::util::logging::init_tracing_with_log_layer;
+use crate::server;
+use crate::util::macchina;
 
 pub async fn get_system_info(enable_geo_lookup: bool) -> Result<server::DeviceSystemInfo> {
     let client = Client::builder()
