@@ -7,8 +7,6 @@ pub enum ForwardAccess {
     Open,
     /// Only these IPs are allowed
     IpWhitelist(Vec<String>),
-    /// Requires a valid bearer/JWT token
-    Auth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,4 +28,11 @@ pub struct CreateForward {
     pub name: Option<String>,
     pub target_port: u16,
     pub access: ForwardAccess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardUpdateRequest {
+    pub name: Option<String>,
+    pub target_port: Option<u16>,
+    pub access: Option<ForwardAccess>,
 }

@@ -1,9 +1,18 @@
+use std::sync::Arc;
+
+use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::routing::post;
-use axum::{routing::get, Json, Router};
-use m87_shared::forward::{CreateForward, PublicForward};
+use axum::http::Request;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{any, get, post};
+use axum::{Json, Router};
+use hyper::upgrade::Upgraded;
+use hyper_util::rt::TokioIo;
 use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
+use tokio::io::AsyncWriteExt;
+use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
+use tracing::warn;
 
 use crate::auth::claims::Claims;
 use crate::auth::tunnel_token::issue_tunnel_token;
@@ -12,9 +21,13 @@ use crate::models::device::{
 };
 use crate::models::forward::ForwardDoc;
 use crate::models::roles::Role;
-use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
+use crate::relay::relay_state::RelayState;
+use crate::response::{
+    ResponsePagination, ServerAppResult, ServerError, ServerResponse, ServerResult,
+};
 use crate::util::app_state::AppState;
 use crate::util::pagination::RequestPagination;
+use m87_shared::forward::{CreateForward, ForwardUpdateRequest, PublicForward};
 
 pub fn create_route() -> Router<AppState> {
     Router::new()
@@ -34,8 +47,9 @@ pub fn create_route() -> Router<AppState> {
         .route("/{id}/forward", get(get_forwards).post(create_forward))
         .route(
             "/{id}/forward/{target_port}",
-            get(get_forward).delete(delete_forward),
+            get(get_forward).delete(delete_forward).post(update_forward),
         )
+        .route("/{short-id}/proxy{*path}", any(proxy_device_http))
 }
 
 async fn get_tunnel_token(
@@ -274,12 +288,14 @@ async fn get_forwards(
         .await?
         .ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    let forwards = ForwardDoc::list_for_device(&state.db, &device.id.unwrap(), pagination).await?;
+    let forwards = ForwardDoc::list_for_device(&state.db, &device.id.unwrap(), &pagination).await?;
+
+    let count = forwards.len() as u64;
     let res: Vec<PublicForward> = forwards.into_iter().map(Into::into).collect();
     Ok(ServerResponse::builder()
         .body(res)
         .pagination(ResponsePagination {
-            count: total_count,
+            count,
             offset: pagination.offset,
             limit: pagination.limit,
         })
@@ -313,23 +329,25 @@ async fn get_forward(
     State(state): State<AppState>,
     Path((id, target_port)): Path<(String, u16)>,
 ) -> ServerAppResult<PublicForward> {
-    let device = claims
+    let device_id = ObjectId::parse_str(&id)?;
+    let _ = claims
         .find_one_with_scope_and_role::<DeviceDoc>(
             &state.db.devices(),
-            doc! { "_id": ObjectId::parse_str(&id)? },
+            doc! { "_id": &device_id },
             Role::Viewer,
         )
         .await?
         .ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    let forwards = ForwardDoc::list_for_device(&state.db, &device.id.unwrap()).await?;
-    let target_port = target_port as u32;
-    let forward = forwards
-        .into_iter()
-        .find(|f| f.target_port == target_port)
-        .ok_or_else(|| ServerError::not_found("Forward not found"))?;
+    let forward = ForwardDoc::get_by_port(&state.db, &device_id, target_port).await?;
+    if forward.is_none() {
+        return Err(ServerError::not_found("Forward not found"));
+    }
 
-    Ok(ServerResponse::builder().body(forward.into()).ok().build())
+    Ok(ServerResponse::builder()
+        .body(forward.unwrap().into())
+        .ok()
+        .build())
 }
 
 async fn delete_forward(
@@ -349,4 +367,84 @@ async fn delete_forward(
     ForwardDoc::delete(&state.db, &device.id.unwrap(), target_port).await?;
 
     Ok(ServerResponse::builder().body(()).ok().build())
+}
+
+async fn update_forward(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path((id, target_port)): Path<(String, u16)>,
+    Json(body): Json<ForwardUpdateRequest>,
+) -> ServerAppResult<()> {
+    let device = claims
+        .find_one_with_scope_and_role::<DeviceDoc>(
+            &state.db.devices(),
+            doc! { "_id": ObjectId::parse_str(&id)? },
+            Role::Editor,
+        )
+        .await?
+        .ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    let _ = ForwardDoc::update(&state.db, &device.id.unwrap(), target_port, body).await?;
+
+    Ok(ServerResponse::builder().ok().build())
+}
+
+pub async fn proxy_device_http(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path(short_id): Path<String>,
+    req: Request<Body>,
+) -> ServerAppResult<()> {
+    // --- 1. Auth check ---
+    let device = claims
+        .find_one_with_scope_and_role::<DeviceDoc>(
+            &state.db.devices(),
+            doc! { "short_id": &short_id },
+            Role::Viewer,
+        )
+        .await
+        .and_then(|opt| opt.ok_or_else(|| ServerError::not_found("device not found")))?;
+
+    // Spawn a task to handle upgraded connection
+    let relay = state.relay.clone();
+    tokio::spawn(async move {
+        match hyper::upgrade::on(req).await {
+            Ok(upgraded) => {
+                let mut client_io = TokioIo::new(upgraded);
+                if let Err(e) =
+                    handle_upgraded_proxy(&mut client_io, relay, device.id.unwrap().to_string())
+                        .await
+                {
+                    warn!("proxy upgrade failed: {e:?}");
+                }
+            }
+            Err(e) => warn!("upgrade failed: {e:?}"),
+        }
+    });
+
+    Ok(ServerResponse::builder().switching_protocols().build())
+}
+
+// --- internal handler for upgraded I/O ---
+
+async fn handle_upgraded_proxy(
+    client_io: &mut TokioIo<Upgraded>,
+    relay: Arc<RelayState>,
+    device_id: String,
+) -> ServerResult<()> {
+    let Some(conn_arc) = relay.get_tunnel(&device_id).await else {
+        warn!("no active tunnel for {device_id}");
+        return Ok(());
+    };
+
+    let mut sess = conn_arc.lock().await;
+    let mut sub = sess
+        .open_stream()
+        .map_err(|_| ServerError::internal_error("Failed to open stream"))?;
+
+    let header = b"80\n";
+    sub.write_all(header).await?;
+
+    tokio::io::copy_bidirectional(client_io, &mut sub).await?;
+    Ok(())
 }

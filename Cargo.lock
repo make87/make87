@@ -2311,6 +2311,8 @@ dependencies = [
  "headers",
  "hex",
  "hmac",
+ "hyper 1.7.0",
+ "hyper-util",
  "jsonwebtoken",
  "m87-shared",
  "mongodb",

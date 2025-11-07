@@ -4,7 +4,7 @@ use crate::{
     util::pagination::RequestPagination,
 };
 use futures::StreamExt;
-use m87_shared::forward::{CreateForward, ForwardAccess, PublicForward};
+use m87_shared::forward::{CreateForward, ForwardAccess, ForwardUpdateRequest, PublicForward};
 use mongodb::{
     bson::{doc, oid::ObjectId, DateTime},
     options::{FindOneAndUpdateOptions, FindOptions, IndexOptions, ReturnDocument},
@@ -102,7 +102,7 @@ impl ForwardDoc {
     pub async fn list_for_device(
         db: &Arc<Mongo>,
         device_id: &ObjectId,
-        pagination: RequestPagination,
+        pagination: &RequestPagination,
     ) -> ServerResult<Vec<ForwardDoc>> {
         let mut cursor = db
             .forwards()
@@ -126,6 +126,18 @@ impl ForwardDoc {
         Ok(items)
     }
 
+    pub async fn get_by_port(
+        db: &Arc<Mongo>,
+        device_id: &ObjectId,
+        target_port: u16,
+    ) -> ServerResult<Option<ForwardDoc>> {
+        let item = db
+            .forwards()
+            .find_one(doc! { "device_id": device_id, "target_port": target_port as u32 })
+            .await?;
+        Ok(item)
+    }
+
     pub async fn delete(
         db: &Arc<Mongo>,
         device_id: &ObjectId,
@@ -136,6 +148,40 @@ impl ForwardDoc {
             .await
             .map_err(|_| ServerError::internal_error("Failed to delete forward"))?;
         Ok(())
+    }
+
+    pub async fn update(
+        db: &Arc<Mongo>,
+        device_id: &ObjectId,
+        target_port: u16,
+        update: ForwardUpdateRequest,
+    ) -> ServerResult<()> {
+        let filter = doc! { "device_id": device_id, "target_port": target_port as u32 };
+
+        let mut udpate_fields = doc! {};
+        if let Some(name) = update.name {
+            udpate_fields.insert("name", name);
+        }
+        if let Some(target_port) = update.target_port {
+            udpate_fields.insert("target_port", target_port as u32);
+        }
+        if let Some(access) = update.access {
+            udpate_fields.insert("access", mongodb::bson::to_bson(&access).unwrap());
+        }
+
+        let update = doc! { "$set": udpate_fields };
+
+        let updated = db
+            .forwards()
+            .update_one(filter, update)
+            .await
+            .map_err(|_| ServerError::internal_error("Failed to update forward"))?;
+
+        if updated.modified_count == 0 {
+            Err(ServerError::not_found("Forward not found"))
+        } else {
+            Ok(())
+        }
     }
 }
 

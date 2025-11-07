@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{extract::FromRequestParts, http::request::Parts};
 use axum_extra::TypedHeader;
 use futures::TryStreamExt;
@@ -7,6 +9,8 @@ use tracing::info;
 
 use crate::{
     auth::access_control::AccessControlled,
+    config::AppConfig,
+    db::Mongo,
     models::{
         api_key::ApiKeyDoc,
         roles::{Role, RoleDoc},
@@ -34,18 +38,28 @@ impl FromRequestParts<AppState> for Claims {
                 .map_err(|_| ServerError::missing_token("missing API key"))?;
 
         let token = bearer.token();
+        Claims::from_bearer_or_key(token, &state.db, &state.config).await
+    }
+}
+
+impl Claims {
+    pub async fn from_bearer_or_key(
+        token: &str,
+        db: &Arc<Mongo>,
+        config: &Arc<AppConfig>,
+    ) -> ServerResult<Self> {
         let is_jwt = token.matches('.').count() == 2;
 
         if is_jwt {
             // Handle JWT
-            let user = UserDoc::get_or_create(&token, &state.db, &state.config).await?;
+            let user = UserDoc::get_or_create(&token, db, config).await?;
 
             if !user.approved {
                 return Err(ServerError::unauthorized("user not approved"));
             }
 
             let reference_id = user.get_reference_id();
-            let mut roles = RoleDoc::list_for_reference(&state.db, &reference_id).await?;
+            let mut roles = RoleDoc::list_for_reference(db, &reference_id).await?;
             // add user:reference_id role as owner
             info!("reference id: {}", reference_id);
             roles.push(RoleDoc {
@@ -58,14 +72,12 @@ impl FromRequestParts<AppState> for Claims {
             Ok(Self { roles })
         } else {
             // Handle API key
-            let key_doc = ApiKeyDoc::find_and_validate_key(&state.db, token).await?;
-            let roles = RoleDoc::list_for_reference(&state.db, &key_doc.key_id).await?;
+            let key_doc = ApiKeyDoc::find_and_validate_key(db, token).await?;
+            let roles = RoleDoc::list_for_reference(db, &key_doc.key_id).await?;
             Ok(Self { roles })
         }
     }
-}
 
-impl Claims {
     pub async fn find_one_with_access<T>(
         &self,
         coll: &Collection<T>,

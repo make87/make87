@@ -143,20 +143,6 @@ impl DeviceDoc {
             api_key_id: create_body.api_key_id,
         };
         let _ = db.devices().insert_one(node.clone()).await?;
-
-        // add default forward rest to config rest port with Auth as default auth
-        let _ = ForwardDoc::create_or_update(
-            db,
-            CreateForward {
-                device_id: device_id.to_string(),
-                device_short_id: node.short_id,
-                name: Some("Websockets".to_string()),
-                target_port: node.config.server_port as u16,
-                access: ForwardAccess::Auth,
-            },
-        )
-        .await?;
-
         Ok(())
     }
 

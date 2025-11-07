@@ -73,6 +73,11 @@ where
         self
     }
 
+    pub fn switching_protocols(mut self) -> Self {
+        self.status_code = Some(StatusCode::SWITCHING_PROTOCOLS);
+        self
+    }
+
     pub fn created(mut self) -> Self {
         self.status_code = Some(StatusCode::CREATED);
         self
