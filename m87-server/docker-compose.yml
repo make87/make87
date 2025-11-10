@@ -25,7 +25,7 @@ services:
       - "443:8084"
       - "8085:8085"
     volumes:
-      - backend-data:/app/certs
+      - backend-data:/data/m87/certs
 
   mongo:
     image: mongo:7

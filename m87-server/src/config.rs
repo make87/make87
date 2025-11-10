@@ -1,3 +1,4 @@
+use base64::{prelude::BASE64_STANDARD, Engine};
 use serde::Deserialize;
 
 use crate::response::ServerResult;
@@ -69,7 +70,10 @@ impl AppConfig {
         let certificate_path =
             std::env::var("CERTIFICATE_PATH").unwrap_or_else(|_| "/data/m87/certs/".to_string());
 
-        let acme_acc_prv_pem_key = std::env::var("ACME_ACC_PRV_PEM_KEY").ok();
+        let acme_acc_prv_pem_key = std::env::var("ACME_ACC_PRV_PEM_KEY").ok().map(|p| {
+            let decoded = BASE64_STANDARD.decode(&p).unwrap();
+            String::from_utf8_lossy(&decoded).to_string()
+        });
 
         Ok(Self {
             mongo_uri,
