@@ -83,6 +83,8 @@ pub async fn serve(
         config: cfg.clone(),
         relay: relay.clone(),
     };
+    // create cfg.certificate_path if it does not exist
+    std::fs::create_dir_all(&cfg.certificate_path).expect("failed to create certificate directory");
     let current = Arc::new(ArcSwap::from(Arc::new(create_tls_config(&cfg).await?)));
 
     // ===== REST on loopback =====
