@@ -23,11 +23,7 @@ enum Commands {
     },
 
     /// Logout and deauthenticate this device
-    Logout {
-        /// Skip confirmation prompt
-        #[arg(long)]
-        force: bool,
-    },
+    Logout,
 
     /// Manage local agent service (requires agent role)
     #[command(subcommand)]
@@ -88,11 +84,7 @@ enum AgentCommands {
 #[derive(Subcommand)]
 enum DevicesCommands {
     /// List all accessible devices
-    List {
-        /// Filter by status (online, offline, pending, all)
-        #[arg(long, value_parser = ["online", "offline", "pending", "all"])]
-        status: Option<String>,
-    },
+    List,
 
     /// Show detailed information about a specific device
     Show {
@@ -104,45 +96,24 @@ enum DevicesCommands {
     Approve {
         /// Device name or ID
         device: String,
-
-        /// Add device to groups on approval (comma-separated)
-        #[arg(long)]
-        groups: Option<String>,
     },
 
     /// Reject a pending device registration
     Reject {
         /// Device name or ID
         device: String,
-
-        /// Optional reason for rejection (for audit logs)
-        #[arg(long)]
-        reason: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 enum TunnelsCommands {
-    /// List all active tunnels, optionally filtered by device
-    List {
-        /// Filter by device name (positional argument or --device flag)
-        #[arg(value_name = "DEVICE")]
-        device: Option<String>,
-
-        /// Filter by device name (using --device flag)
-        #[arg(long = "device", conflicts_with = "device")]
-        device_flag: Option<String>,
-    },
+    /// List all active tunnels
+    List,
 
     /// Close an active tunnel
     Close {
-        /// Tunnel ID to close (mutually exclusive with --device)
-        #[arg(value_name = "ID", conflicts_with = "device")]
-        id: Option<String>,
-
-        /// Close all tunnels to specific device
-        #[arg(long, conflicts_with = "id")]
-        device: Option<String>,
+        /// Tunnel ID to close
+        id: String,
     },
 }
 
@@ -172,9 +143,9 @@ pub async fn cli() -> anyhow::Result<()> {
             bail!("Not implemented");
         }
 
-        Commands::Logout { force } => {
+        Commands::Logout => {
             eprintln!("Error: 'logout' command is not yet implemented");
-            eprintln!("Would logout device (force={})", force);
+            eprintln!("Would logout device");
             bail!("Not implemented");
         }
 
@@ -220,13 +191,9 @@ pub async fn cli() -> anyhow::Result<()> {
         },
 
         Commands::Devices(cmd) => match cmd {
-            DevicesCommands::List { status } => {
+            DevicesCommands::List => {
                 eprintln!("Error: 'devices list' command is not yet implemented");
-                if let Some(s) = status {
-                    eprintln!("Would list devices with status filter: {}", s);
-                } else {
-                    eprintln!("Would list all devices (online and offline, excluding pending)");
-                }
+                eprintln!("Would list all accessible devices");
                 bail!("Not implemented");
             }
             DevicesCommands::Show { device } => {
@@ -234,44 +201,27 @@ pub async fn cli() -> anyhow::Result<()> {
                 eprintln!("Would show details for device: {}", device);
                 bail!("Not implemented");
             }
-            DevicesCommands::Approve { device, groups } => {
+            DevicesCommands::Approve { device } => {
                 eprintln!("Error: 'devices approve' command is not yet implemented");
                 eprintln!("Would approve device: {}", device);
-                if let Some(g) = groups {
-                    eprintln!("Would add to groups: {}", g);
-                }
                 bail!("Not implemented");
             }
-            DevicesCommands::Reject { device, reason } => {
+            DevicesCommands::Reject { device } => {
                 eprintln!("Error: 'devices reject' command is not yet implemented");
                 eprintln!("Would reject device: {}", device);
-                if let Some(r) = reason {
-                    eprintln!("Reason: {}", r);
-                }
                 bail!("Not implemented");
             }
         },
 
         Commands::Tunnels(cmd) => match cmd {
-            TunnelsCommands::List { device, device_flag } => {
-                let filter_device = device.or(device_flag);
+            TunnelsCommands::List => {
                 eprintln!("Error: 'tunnels list' command is not yet implemented");
-                if let Some(d) = filter_device {
-                    eprintln!("Would list tunnels for device: {}", d);
-                } else {
-                    eprintln!("Would list all active tunnels");
-                }
+                eprintln!("Would list all active tunnels");
                 bail!("Not implemented");
             }
-            TunnelsCommands::Close { id, device } => {
+            TunnelsCommands::Close { id } => {
                 eprintln!("Error: 'tunnels close' command is not yet implemented");
-                if let Some(tunnel_id) = id {
-                    eprintln!("Would close tunnel with ID: {}", tunnel_id);
-                } else if let Some(dev) = device {
-                    eprintln!("Would close all tunnels to device: {}", dev);
-                } else {
-                    eprintln!("Error: Must specify either tunnel ID or --device");
-                }
+                eprintln!("Would close tunnel with ID: {}", id);
                 bail!("Not implemented");
             }
         },
@@ -328,72 +278,56 @@ async fn handle_device_command(args: Vec<String>) -> anyhow::Result<()> {
         }
 
         "tunnel" => {
-            // Handle tunnel subcommands: list, close, or create tunnel
+            // Handle tunnel creation only
             if remaining_args.is_empty() {
-                bail!("Tunnel command requires arguments. Usage: m87 {} tunnel <remote>:<local> | list | close", device_name);
+                bail!("Tunnel command requires arguments. Usage: m87 {} tunnel <remote>:<local>", device_name);
             }
 
             let first_arg = &remaining_args[0];
 
-            match first_arg.as_str() {
-                "list" => {
-                    eprintln!("Error: 'tunnel list' command is not yet implemented for device '{}'", device_name);
-                    eprintln!("Would list all tunnels for device: {}", device_name);
-                    bail!("Not implemented");
-                }
-                "close" => {
-                    if remaining_args.len() < 2 {
-                        bail!("Usage: m87 {} tunnel close <id|--all>", device_name);
-                    }
-                    eprintln!("Error: 'tunnel close' command is not yet implemented for device '{}'", device_name);
-                    if remaining_args[1] == "--all" {
-                        eprintln!("Would close all tunnels for device: {}", device_name);
-                    } else {
-                        eprintln!("Would close tunnel with ID: {}", remaining_args[1]);
-                    }
-                    bail!("Not implemented");
-                }
-                _ => {
-                    // Create tunnel: <remote>:<local>
-                    if !first_arg.contains(':') {
-                        bail!("Invalid tunnel format. Expected <remote-port>:<local-port>");
-                    }
-                    eprintln!("Error: 'tunnel' command is not yet implemented for device '{}'", device_name);
-                    eprintln!("Would create tunnel: {}", first_arg);
+            // Create tunnel: <remote>:<local>
+            if !first_arg.contains(':') {
+                bail!("Invalid tunnel format. Expected <remote-port>:<local-port>");
+            }
+            eprintln!("Error: 'tunnel' command is not yet implemented for device '{}'", device_name);
+            eprintln!("Would create tunnel: {}", first_arg);
 
-                    // Parse additional flags
-                    for arg in remaining_args.iter().skip(1) {
-                        match arg.as_str() {
-                            "--background" | "-b" => eprintln!("  Run in background: true"),
-                            "--persist" => eprintln!("  Persistent (survives reboots): true"),
-                            _ if arg.starts_with("--name") => {
-                                eprintln!("  Tunnel name specified");
-                            }
-                            _ => {}
-                        }
+            // Parse additional flags
+            for arg in remaining_args.iter().skip(1) {
+                match arg.as_str() {
+                    "--background" | "-b" => eprintln!("  Run in background: true"),
+                    "--persist" => eprintln!("  Persistent (survives reboots): true"),
+                    _ if arg.starts_with("--name") => {
+                        eprintln!("  Tunnel name specified");
                     }
-                    bail!("Not implemented");
+                    _ => {}
                 }
             }
+            bail!("Not implemented");
+        }
+
+        "tunnels" => {
+            // Handle tunnels close <id> only
+            if remaining_args.len() < 2 {
+                bail!("Usage: m87 {} tunnels close <id>", device_name);
+            }
+
+            if remaining_args[0] != "close" {
+                bail!("Unknown tunnels subcommand. Usage: m87 {} tunnels close <id>", device_name);
+            }
+
+            let tunnel_id = &remaining_args[1];
+            eprintln!("Error: 'tunnels close' command is not yet implemented for device '{}'", device_name);
+            eprintln!("Would close tunnel with ID: {}", tunnel_id);
+            bail!("Not implemented");
         }
 
         "sync" => {
             if remaining_args.len() < 2 {
-                bail!("Usage: m87 {} sync <local-path> <remote-path> [options]", device_name);
+                bail!("Usage: m87 {} sync <local-path> <remote-path>", device_name);
             }
             eprintln!("Error: 'sync' command is not yet implemented for device '{}'", device_name);
             eprintln!("Would sync from '{}' to '{}'", remaining_args[0], remaining_args[1]);
-
-            // Check for flags
-            for arg in remaining_args.iter().skip(2) {
-                match arg.as_str() {
-                    "--watch" | "-w" => eprintln!("  Watch mode: enabled"),
-                    "--delete" => eprintln!("  Delete mode: enabled"),
-                    "--dry-run" => eprintln!("  Dry run: enabled"),
-                    _ if arg.starts_with("--exclude") => eprintln!("  Exclude pattern specified"),
-                    _ => {}
-                }
-            }
             bail!("Not implemented");
         }
 
@@ -423,24 +357,14 @@ async fn handle_device_command(args: Vec<String>) -> anyhow::Result<()> {
             eprintln!("Error: 'logs' command is not yet implemented for device '{}'", device_name);
 
             // Parse logs arguments
-            let mut container: Option<&str> = None;
             let mut follow = false;
-            let mut since: Option<&str> = None;
             let mut tail = 100;
-            let mut timestamps = false;
 
             let mut i = 0;
             while i < remaining_args.len() {
                 let arg = &remaining_args[i];
                 match arg.as_str() {
-                    "-f" | "--follow" => follow = true,
-                    "--timestamps" => timestamps = true,
-                    "--since" => {
-                        if i + 1 < remaining_args.len() {
-                            since = Some(&remaining_args[i + 1]);
-                            i += 1;
-                        }
-                    }
+                    "-f" => follow = true,
                     "--tail" => {
                         if i + 1 < remaining_args.len() {
                             if let Ok(n) = remaining_args[i + 1].parse::<usize>() {
@@ -449,47 +373,19 @@ async fn handle_device_command(args: Vec<String>) -> anyhow::Result<()> {
                             i += 1;
                         }
                     }
-                    _ if !arg.starts_with("-") && container.is_none() => {
-                        container = Some(arg);
-                    }
                     _ => {}
                 }
                 i += 1;
             }
 
-            if let Some(c) = container {
-                eprintln!("Would stream logs for container: {}", c);
-            } else {
-                eprintln!("Would stream system logs");
-            }
-            eprintln!("  Follow: {}, Since: {:?}, Tail: {}, Timestamps: {}",
-                     follow, since, tail, timestamps);
+            eprintln!("Would stream logs from device");
+            eprintln!("  Follow: {}, Tail: {}", follow, tail);
             bail!("Not implemented");
         }
 
         "stats" => {
             eprintln!("Error: 'stats' command is not yet implemented for device '{}'", device_name);
-
-            let mut watch = false;
-            let mut interval = "2s";
-
-            let mut i = 0;
-            while i < remaining_args.len() {
-                let arg = &remaining_args[i];
-                match arg.as_str() {
-                    "-w" | "--watch" => watch = true,
-                    "--interval" => {
-                        if i + 1 < remaining_args.len() {
-                            interval = &remaining_args[i + 1];
-                            i += 1;
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-
-            eprintln!("Would show resource statistics (watch={}, interval={})", watch, interval);
+            eprintln!("Would show resource statistics");
             bail!("Not implemented");
         }
 
@@ -518,7 +414,7 @@ async fn handle_device_command(args: Vec<String>) -> anyhow::Result<()> {
         }
 
         _ => {
-            bail!("Unknown command '{}' for device '{}'. Available commands: ssh, tunnel, sync, copy, ls, docker, logs, stats, cmd",
+            bail!("Unknown command '{}' for device '{}'. Available commands: ssh, tunnel, tunnels, sync, copy, ls, docker, logs, stats, cmd",
                   command, device_name);
         }
     }
