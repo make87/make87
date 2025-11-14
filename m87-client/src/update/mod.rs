@@ -9,10 +9,9 @@ pub async fn update(interactive: bool) -> Result<bool> {
     info!("Checking for updates...");
     let current_version = cargo_crate_version!();
 
-    // Replace this once you have tagged releases on GitHub
     let maybe_status = self_update::backends::github::Update::configure()
         .repo_owner("make87")
-        .repo_name("make87-client")
+        .repo_name("make87")
         .bin_name("m87")
         .current_version(current_version)
         .no_confirm(!interactive)
@@ -48,7 +47,7 @@ pub async fn daemon_check_and_update() -> Result<()> {
     match update(false).await {
         Ok(true) => {
             info!("Device updated; exiting for restart via systemd");
-            std::process::exit(0);
+            std::process::exit(1); // throw error code on exit so systemd restarts "on-failure"
         }
         Ok(false) => {}
         Err(e) => error!("Update check failed: {:?}", e),
