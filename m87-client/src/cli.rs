@@ -63,7 +63,7 @@ enum Commands {
     /// Logout and deauthenticate this device
     Logout,
 
-    /// Manage local agent service (requires agent role)
+    /// Manage local agent service (requires root privileges - use sudo)
     #[command(subcommand)]
     Agent(AgentCommands),
 
@@ -113,30 +113,30 @@ enum AgentCommands {
     /// Run the agent daemon (blocking, used by systemd service)
     Run,
 
-    /// Start the agent service now (does not persist across reboots)
+    /// Start the agent service now (requires sudo)
     Start,
 
-    /// Stop the agent service now (does not change auto-start configuration)
+    /// Stop the agent service now (requires sudo)
     Stop,
 
-    /// Restart the agent service
+    /// Restart the agent service (requires sudo)
     Restart,
 
-    /// Configure service to auto-start on boot (does not start now)
+    /// Configure service to auto-start on boot (requires sudo)
     Enable {
         /// Enable AND start service immediately
         #[arg(long)]
         now: bool,
     },
 
-    /// Remove auto-start on boot (does not stop running service)
+    /// Remove auto-start on boot (requires sudo)
     Disable {
         /// Disable AND stop service immediately
         #[arg(long)]
         now: bool,
     },
 
-    /// Show local agent service status and configuration
+    /// Show local agent service status
     Status,
 }
 

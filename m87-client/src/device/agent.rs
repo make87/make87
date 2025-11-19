@@ -24,6 +24,21 @@ use crate::util::system_info::get_system_info;
 const SERVICE_NAME: &str = "m87-agent";
 const SERVICE_FILE: &str = "/etc/systemd/system/m87-agent.service";
 
+/// Helper to check if a command failed due to permission issues and provide helpful error message
+fn check_permission_error(status: std::process::ExitStatus) -> Result<()> {
+    // Exit code 1 is commonly used for permission denied by systemctl
+    // Exit code 4 is used by systemctl for insufficient privileges
+    if let Some(code) = status.code() {
+        if code == 1 || code == 4 {
+            anyhow::bail!(
+                "Permission denied. This command requires root privileges.\n\
+                Please run with: sudo m87 agent <command>"
+            );
+        }
+    }
+    anyhow::bail!("Command failed with exit code: {:?}", status.code());
+}
+
 /// Internal helper: Install the systemd service file and reload daemon
 /// Not directly callable from CLI - used by other functions when service is missing
 pub async fn install_service() -> Result<()> {
@@ -63,10 +78,17 @@ WantedBy=multi-user.target
     std::fs::write(SERVICE_FILE, &service_content)
         .context("Failed to write systemd service file")?;
 
-    Command::new("sudo")
-        .args(["systemctl", "daemon-reload"])
+    let status = Command::new("systemctl")
+        .args(["daemon-reload"])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .status()
         .context("Failed to reload systemd daemon")?;
+
+    if !status.success() {
+        check_permission_error(status)?;
+    }
 
     info!("Installed systemd service at {}", SERVICE_FILE);
     Ok(())
@@ -74,19 +96,28 @@ WantedBy=multi-user.target
 
 /// Internal helper: Uninstall the systemd service file
 /// Not directly callable from CLI - used by other functions
-pub async fn uninstall_service() -> Result<()> {
+async fn uninstall_service() -> Result<()> {
     if Path::new(SERVICE_FILE).exists() {
-        Command::new("sudo")
-            .args(["systemctl", "stop", SERVICE_NAME])
+        Command::new("systemctl")
+            .args(["stop", SERVICE_NAME])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .ok();
-        Command::new("sudo")
-            .args(["systemctl", "disable", SERVICE_NAME])
+        Command::new("systemctl")
+            .args(["disable", SERVICE_NAME])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .ok();
         std::fs::remove_file(SERVICE_FILE).context("Failed to remove service file")?;
-        Command::new("sudo")
-            .args(["systemctl", "daemon-reload"])
+        Command::new("systemctl")
+            .args(["daemon-reload"])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .ok();
         info!("Uninstalled m87 device service");
@@ -111,10 +142,17 @@ async fn ensure_service_installed() -> Result<()> {
 pub async fn start() -> Result<()> {
     ensure_service_installed().await?;
 
-    Command::new("sudo")
-        .args(["systemctl", "start", SERVICE_NAME])
+    let status = Command::new("systemctl")
+        .args(["start", SERVICE_NAME])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .status()
         .context("Failed to start service")?;
+
+    if !status.success() {
+        check_permission_error(status)?;
+    }
 
     info!("Started m87-agent service");
     Ok(())
@@ -123,10 +161,17 @@ pub async fn start() -> Result<()> {
 /// CLI: m87 agent stop
 /// Stops the agent service
 pub async fn stop() -> Result<()> {
-    Command::new("sudo")
-        .args(["systemctl", "stop", SERVICE_NAME])
+    let status = Command::new("systemctl")
+        .args(["stop", SERVICE_NAME])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .status()
         .context("Failed to stop service")?;
+
+    if !status.success() {
+        check_permission_error(status)?;
+    }
 
     info!("Stopped m87-agent service");
     Ok(())
@@ -137,10 +182,17 @@ pub async fn stop() -> Result<()> {
 pub async fn restart() -> Result<()> {
     ensure_service_installed().await?;
 
-    Command::new("sudo")
-        .args(["systemctl", "restart", SERVICE_NAME])
+    let status = Command::new("systemctl")
+        .args(["restart", SERVICE_NAME])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
         .status()
         .context("Failed to restart service")?;
+
+    if !status.success() {
+        check_permission_error(status)?;
+    }
 
     info!("Restarted m87-agent service");
     Ok(())
@@ -151,18 +203,30 @@ pub async fn restart() -> Result<()> {
 pub async fn enable(now: bool) -> Result<()> {
     ensure_service_installed().await?;
 
-    if now {
-        Command::new("sudo")
-            .args(["systemctl", "enable", "--now", SERVICE_NAME])
+    let status = if now {
+        let s = Command::new("systemctl")
+            .args(["enable", "--now", SERVICE_NAME])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .context("Failed to enable service")?;
         info!("Enabled and started m87-agent service");
+        s
     } else {
-        Command::new("sudo")
-            .args(["systemctl", "enable", SERVICE_NAME])
+        let s = Command::new("systemctl")
+            .args(["enable", SERVICE_NAME])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .context("Failed to enable service")?;
         info!("Enabled m87-agent service");
+        s
+    };
+
+    if !status.success() {
+        check_permission_error(status)?;
     }
 
     Ok(())
@@ -171,18 +235,30 @@ pub async fn enable(now: bool) -> Result<()> {
 /// CLI: m87 agent disable [--now]
 /// Disables auto-start on boot
 pub async fn disable(now: bool) -> Result<()> {
-    if now {
-        Command::new("sudo")
-            .args(["systemctl", "disable", "--now", SERVICE_NAME])
+    let status = if now {
+        let s = Command::new("systemctl")
+            .args(["disable", "--now", SERVICE_NAME])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .context("Failed to disable service")?;
         info!("Disabled and stopped m87-agent service");
+        s
     } else {
-        Command::new("sudo")
-            .args(["systemctl", "disable", SERVICE_NAME])
+        let s = Command::new("systemctl")
+            .args(["disable", SERVICE_NAME])
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
             .status()
             .context("Failed to disable service")?;
         info!("Disabled m87-agent service");
+        s
+    };
+
+    if !status.success() {
+        check_permission_error(status)?;
     }
 
     Ok(())
