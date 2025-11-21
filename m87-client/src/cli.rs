@@ -216,13 +216,7 @@ pub async fn cli() -> anyhow::Result<()> {
             #[cfg(feature = "agent")]
             if agent {
                 // Determine owner_scope from provided flags
-                let owner_scope = if let Some(org) = org_id {
-                    Some(format!("org:{}", org))
-                } else if let Some(email_addr) = email {
-                    Some(format!("user:{}", email_addr))
-                } else {
-                    None
-                };
+                let owner_scope = org_id.or(email);
 
                 // Agent registration flow (headless, requires approval)
                 println!("Registering device as agent...");
