@@ -272,16 +272,18 @@ pub async fn disable(now: bool) -> Result<()> {
 pub async fn status() -> Result<()> {
     ensure_service_installed().await?;
 
-    let output = Command::new("systemctl")
+    let status = Command::new("systemctl")
         .args(["status", SERVICE_NAME])
-        .output()
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
         .context("Failed to query service status")?;
 
-    let msg = match output.stdout.len() == 0 {
-        true => String::from_utf8_lossy(&output.stderr),
-        false => String::from_utf8_lossy(&output.stdout),
-    };
-    info!("{}", msg);
+    if !status.success() {
+        check_permission_error(status)?;
+    }
+    
     Ok(())
 }
 
