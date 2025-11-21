@@ -1,4 +1,3 @@
-use crate::rest::auth::validate_token_via_ws;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::{SinkExt, StreamExt};
 use pty_process::Size;
@@ -8,12 +7,6 @@ use tracing::{error, info};
 /// Per-connection interactive container shell (not shared on purpose)
 pub async fn handle_container_terminal_ws(container_name: String, socket: WebSocket) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-
-    // Authenticate first
-    if let Err(e) = validate_token_via_ws(&mut ws_tx, &mut ws_rx, true).await {
-        error!("auth failed: {}", e);
-        return;
-    }
 
     // Try different shells
     let candidate_cmds = ["/bin/bash", "/bin/sh", "bash", "sh"];

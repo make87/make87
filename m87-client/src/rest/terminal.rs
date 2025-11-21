@@ -1,4 +1,3 @@
-use crate::rest::auth::validate_token_via_ws;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::{SinkExt, StreamExt};
 use tokio::{
@@ -7,15 +6,16 @@ use tokio::{
     select,
     time::{timeout, Duration},
 };
-use tracing::error;
+use tracing::{error, info};
 
 pub async fn handle_terminal_ws(socket: WebSocket) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // --- Authenticate client ---
-    if let Err(e) = validate_token_via_ws(&mut ws_tx, &mut ws_rx, true).await {
-        error!("auth failed: {}", e);
-        return;
+    if let Err(e) = ws_tx
+        .send(Message::Text("Initializing shell...\n".into()))
+        .await
+    {
+        error!("Failed to send initialization message: {}", e);
     }
 
     // --- Spawn SSH child process ---

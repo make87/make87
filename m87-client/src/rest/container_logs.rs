@@ -1,4 +1,3 @@
-use crate::rest::auth::validate_token_via_ws;
 use crate::rest::shared::acquire_process_task;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::{SinkExt, StreamExt};
@@ -6,12 +5,6 @@ use tracing::error;
 
 pub async fn handle_container_logs_ws(container_name: String, socket: WebSocket) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-
-    // Authenticate
-    if let Err(e) = validate_token_via_ws(&mut ws_tx, &mut ws_rx, true).await {
-        error!("auth failed: {}", e);
-        return;
-    }
 
     // Spawn docker logs -f process
     let (task, mut rx) = acquire_process_task(
