@@ -4,14 +4,16 @@ use axum::{
         ws::{WebSocket, WebSocketUpgrade},
         Path,
     },
+    http::HeaderMap,
     response::{IntoResponse, Response},
     routing::get,
     Router,
 };
+use reqwest::header;
 use std::{future::Future, net::SocketAddr, pin::Pin};
 use tokio::net::TcpListener;
 
-// import your handlers
+use crate::rest::auth::validate_token;
 use crate::rest::{
     container_logs::handle_container_logs_ws, container_terminal::handle_container_terminal_ws,
     logs::handle_logs_ws, metrics::handle_system_metrics_ws, terminal::handle_terminal_ws,
@@ -32,17 +34,45 @@ pub fn build_router() -> Router {
         )
 }
 
-/// WebSocket upgrade helper (no path params)
 fn ws_upgrade<H>(
     handler: fn(WebSocket) -> H,
-) -> impl Fn(WebSocketUpgrade) -> Pin<Box<dyn Future<Output = Response> + Send>> + Clone + Send + 'static
+) -> impl Fn(WebSocketUpgrade, HeaderMap) -> Pin<Box<dyn Future<Output = Response> + Send>>
+       + Clone
+       + Send
+       + 'static
 where
     H: Future<Output = ()> + Send + 'static,
 {
-    move |ws: WebSocketUpgrade| {
+    move |ws: WebSocketUpgrade, headers: HeaderMap| {
         Box::pin(async move {
-            let resp = ws.on_upgrade(handler);
-            resp.into_response()
+            // Extract protocol: "bearer.<jwt>"
+            let proto = headers
+                .get(header::SEC_WEBSOCKET_PROTOCOL)
+                .and_then(|h| h.to_str().ok());
+
+            let jwt = match &proto {
+                Some(p) if p.starts_with("bearer.") => p.trim_start_matches("bearer.").to_string(),
+                _ => {
+                    return (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        "Missing or invalid WebSocket protocol",
+                    )
+                        .into_response();
+                }
+            };
+
+            // Validate token
+            match validate_token(&jwt).await {
+                Ok(c) => c,
+                Err(_) => {
+                    return (axum::http::StatusCode::UNAUTHORIZED, "Invalid auth token")
+                        .into_response();
+                }
+            };
+            let protocol_string = format!("bearer.{jwt}");
+            let ws = ws.protocols([protocol_string]);
+
+            ws.on_upgrade(move |socket| handler(socket)).into_response()
         })
     }
 }

@@ -30,7 +30,6 @@ pub async fn handle_sni(sni: &str, mut tls: TlsStream<tokio::net::TcpStream>, st
     let public = &state.config.public_address;
     let control_host = format!("control.{public}");
 
-    // === REST ===
     if sni == *public {
         if let Err(e) = proxy_to_rest(&mut tls, state.config.rest_port).await {
             warn!("REST proxy failed: {e:?}");
@@ -38,7 +37,6 @@ pub async fn handle_sni(sni: &str, mut tls: TlsStream<tokio::net::TcpStream>, st
         return;
     }
 
-    // === CONTROL ===
     if sni == control_host {
         if let Err(e) =
             handle_control_tunnel(state.relay.clone(), tls, &state.config.forward_secret).await
@@ -48,27 +46,27 @@ pub async fn handle_sni(sni: &str, mut tls: TlsStream<tokio::net::TcpStream>, st
         return;
     }
 
-    // === DEVICE or FORWARD ===
     if let Some(prefix) = sni.strip_suffix(public) {
-        // e.g. "myapp.device123." -> "myapp.device123."
+        // e.g. "device123.", "myapp-device123."
         let prefix = prefix.trim_end_matches('.');
 
-        let parts: Vec<&str> = prefix.split('.').collect();
+        let parts: Vec<&str> = prefix.split('-').collect();
         match parts.len() {
             1 => {
-                // device123.public_address
                 let node_short_id = parts[0];
                 if let Err(e) = proxy_to_device_rest(&mut tls, node_short_id, state).await {
                     warn!("device proxy failed: {e:?}");
                 }
             }
-            n if n >= 2 => {
-                // myapp.device123.public_address → forward connection
+            n if n == 2 => {
+                let device_short_id = parts[1];
+                let forward_name = parts[0];
                 if let Err(e) = handle_forward_connection(
                     state.relay.clone(),
                     state.db.clone(),
                     state.config.clone(),
-                    sni.to_string(),
+                    device_short_id.to_string(),
+                    forward_name.to_string(),
                     tls,
                 )
                 .await
@@ -84,34 +82,28 @@ pub async fn handle_sni(sni: &str, mut tls: TlsStream<tokio::net::TcpStream>, st
         return;
     }
 
-    // === Fallback ===
     warn!("unmatched SNI: {}", sni);
     let _ = tls.shutdown().await;
 }
 
-// --- Helper: extract "Authorization: Bearer <token>" from raw headers ---
 fn extract_bearer_token(request: &str) -> Option<String> {
-    // 1. Regular Authorization header
     for line in request.lines() {
         let lower = line.to_ascii_lowercase();
+
         if lower.starts_with("authorization: bearer ") {
             return line
                 .split_once("Bearer ")
-                .map(|(_, val)| val.trim().to_string());
+                .map(|(_, v)| v.trim().to_string());
         }
 
-        // 2. WebSocket subprotocol form: Sec-WebSocket-Protocol: bearer.<token>
-        if lower.starts_with("sec-websocket-protocol: bearer.") {
-            // skip past prefix
-            let token = &line["Sec-WebSocket-Protocol: bearer.".len()..];
-            // strip trailing commas / whitespace
-            let token = token
-                .split(|c| c == ',' || c == '\r' || c == '\n')
-                .next()
-                .unwrap_or("")
-                .trim();
-            if !token.is_empty() {
-                return Some(token.to_string());
+        if lower.starts_with("sec-websocket-protocol:") {
+            let original = line.splitn(2, ':').nth(1)?.trim();
+
+            for proto in original.split(',') {
+                let proto_trim = proto.trim();
+                if proto_trim.to_ascii_lowercase().starts_with("bearer.") {
+                    return Some(proto_trim["bearer.".len()..].to_string());
+                }
             }
         }
     }
@@ -124,17 +116,15 @@ pub async fn proxy_to_device_rest(
     short_id: &str,
     state: &AppState,
 ) -> ServerResult<()> {
-    // --- 1. Read initial request chunk (headers, maybe some body) ---
-    let mut buf = [0u8; 8192];
-    let n = inbound.read(&mut buf).await?;
-    if n == 0 {
-        return Ok(());
-    }
-    let request = String::from_utf8_lossy(&buf[..n]);
+    let (buffer, header_end) = read_full_http_request(inbound).await?;
+    let header_bytes = &buffer[..header_end];
+    let leftover_bytes = &buffer[header_end..];
 
-    // --- 2. Extract and validate token ---
+    let request = String::from_utf8_lossy(header_bytes);
+
     let token = extract_bearer_token(&request);
     if token.is_none() {
+        info!("Rejecting connection to {}. Missing token!", short_id);
         inbound
             .get_mut()
             .0
@@ -164,7 +154,6 @@ pub async fn proxy_to_device_rest(
 
     let device_id = device.id.clone().unwrap().to_string();
 
-    // --- 3. Find the active tunnel for the node ---
     let Some(conn_arc) = state.relay.get_tunnel(&device_id).await else {
         warn!("No active tunnel for {short_id}");
         inbound
@@ -175,9 +164,8 @@ pub async fn proxy_to_device_rest(
         return Ok(());
     };
 
-    // --- 4. Open a yamux substream ---
-    let mut sess = conn_arc.lock().await;
-    let mut sub = match sess.open_stream().await {
+    let mut control = conn_arc.lock().await;
+    let mut sub = match control.open_stream().await {
         Ok(s) => s,
         Err(_) => {
             inbound
@@ -188,17 +176,53 @@ pub async fn proxy_to_device_rest(
             return Ok(());
         }
     };
+    drop(control);
 
-    // --- 5. Send REST port info to the node (e.g. 80 or configurable) ---
     let rest_port = device.config.server_port;
     sub.write_all(format!("{rest_port}\n").as_bytes()).await?;
 
-    // --- 6. Send already-read request data to the node ---
-    sub.write_all(&buf[..n]).await?;
+    sub.write_all(header_bytes).await?;
+    if !leftover_bytes.is_empty() {
+        sub.write_all(leftover_bytes).await?;
+    }
+    sub.flush().await?;
 
-    // --- 7. Start full duplex proxy ---
     tokio::io::copy_bidirectional(inbound, &mut sub).await?;
     Ok(())
+}
+
+async fn read_full_http_request(
+    inbound: &mut (impl AsyncReadExt + Unpin),
+) -> io::Result<(Vec<u8>, usize)> {
+    let mut buf = Vec::with_capacity(4096);
+
+    let header_end = loop {
+        // read chunk
+        let mut tmp = [0u8; 1024];
+        let n = inbound.read(&mut tmp).await?;
+
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "client closed before sending headers",
+            ));
+        }
+
+        buf.extend_from_slice(&tmp[..n]);
+
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+
+        if buf.len() > 32 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "headers too large",
+            ));
+        }
+    };
+
+    Ok((buf, header_end))
 }
 
 async fn proxy_to_rest(
@@ -241,7 +265,6 @@ pub async fn handle_control_tunnel(
             return Ok(());
         }
         Err(err) => {
-            // print error message
             warn!("control: token invalid {}", err);
             return Ok(());
         }
@@ -252,7 +275,6 @@ pub async fn handle_control_tunnel(
         tunnels.remove(&device_id);
     }
 
-    // Upgrade to Yamux
     let base = reader.into_inner();
     let mut sess = Session::new_server(base, YamuxConfig::default());
     let control = sess.control();
@@ -287,19 +309,16 @@ async fn handle_forward_connection(
     relay: Arc<RelayState>,
     db: Arc<Mongo>,
     config: Arc<AppConfig>,
-    host: String,
+    device_short_id: String,
+    forward_name: String,
     mut inbound: TlsStream<tokio::net::TcpStream>,
 ) -> ServerResult<()> {
-    let subdomain = host.split('.').next().unwrap_or_default();
-
-    // Lookup forward entry
     let forward_doc = db
         .forwards()
-        .find_one(doc! { "device_short_id": subdomain })
+        .find_one(doc! { "device_short_id": &device_short_id, "name": &forward_name })
         .await?
         .ok_or_else(|| ServerError::not_found("no matching forward"))?;
 
-    // Enforce access policy
     match &forward_doc.access {
         ForwardAccess::Open => {
             // Nothing to check
@@ -309,7 +328,10 @@ async fn handle_forward_connection(
             if let Ok(peer) = inbound.get_ref().0.peer_addr() {
                 let ip = peer.ip().to_string();
                 if !whitelist.iter().any(|a| a == &ip) {
-                    warn!(%host, %ip, "blocked by IP whitelist");
+                    warn!(
+                        "{}-{} {}blocked by IP whitelist",
+                        &forward_name, &device_short_id, &ip
+                    );
                     let _ = inbound.get_mut().0.shutdown().await;
                     return Ok(());
                 }
@@ -317,31 +339,26 @@ async fn handle_forward_connection(
         }
     }
 
-    // Now find tunnel and forward
     let Some(conn_arc) = relay.get_tunnel(&forward_doc.device_id.to_string()).await else {
-        warn!(%host, device_id=%forward_doc.device_id, "tunnel not active");
+        warn!(
+            "{}-{} for device {} tunnel not active",
+            &forward_name, &device_short_id, &forward_doc.device_id
+        );
         let _ = inbound.shutdown().await;
         return Ok(());
     };
 
-    let mut sess = conn_arc.lock().await;
-    let mut sub = sess
+    let mut control = conn_arc.lock().await;
+    let mut sub = control
         .open_stream()
         .await
         .map_err(|_| ServerError::internal_error("yamux open_stream failed"))?;
+    drop(control);
 
-    // Send port header to node
     sub.write_all(format!("{}\n", forward_doc.target_port).as_bytes())
         .await?;
-
-    // Forward already-peeked data so the request isn’t truncated
-    let mut tmp = [0u8; 1024];
-    let n = inbound.read(&mut tmp).await?;
-    sub.write_all(&tmp[..n]).await?;
-
-    tokio::spawn(async move {
-        let _ = proxy_bidirectional(&mut inbound, &mut sub).await;
-    });
+    sub.flush().await?;
+    let _ = proxy_bidirectional(&mut inbound, &mut sub).await;
 
     Ok(())
 }

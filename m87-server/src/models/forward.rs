@@ -185,28 +185,6 @@ impl ForwardDoc {
     }
 }
 
-/// Add this to Mongo::ensure_indexes()
-pub async fn ensure_forward_indexes(db: &Arc<Mongo>) -> ServerResult<()> {
-    db.forwards()
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "device_id": 1, "target_port": 1 })
-                .options(IndexOptions::builder().unique(true).build())
-                .build(),
-        )
-        .await?;
-
-    db.forwards()
-        .create_index(
-            IndexModel::builder()
-                .keys(doc! { "device_short_id": 1 })
-                .build(),
-        )
-        .await?;
-
-    Ok(())
-}
-
 impl Into<PublicForward> for ForwardDoc {
     fn into(self) -> PublicForward {
         PublicForward {

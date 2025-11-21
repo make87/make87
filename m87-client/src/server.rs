@@ -8,7 +8,7 @@ use rustls::{
 };
 use std::sync::Arc;
 use tokio::{
-    io::{self, BufReader},
+    io::{self, AsyncReadExt, BufReader},
     net::TcpStream,
 };
 use tokio_rustls::{rustls, TlsConnector};
@@ -308,39 +308,35 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     let mut sess = Session::new_client(tls, YamuxConfig::default());
     info!("control session created");
     // continuously poll session to handle keep-alives, frame exchange
-    while let Some(Ok(stream)) = sess.next().await {
+    while let Some(Ok(mut yamux_stream)) = sess.next().await {
+        info!("new yamux stream");
         tokio::spawn(async move {
-            use tokio::io::AsyncBufReadExt;
-            let mut reader = BufReader::new(stream);
+            // ---- READ PORT HEADER EXACTLY ----
+            let port = match read_port_line(&mut yamux_stream).await {
+                Ok(p) if p > 0 => p,
+                Ok(_) => {
+                    warn!("invalid port header");
+                    return;
+                }
+                Err(e) => {
+                    warn!("failed to read port header: {:?}", e);
+                    return;
+                }
+            };
 
-            // 1. READ (not peek!) the port line
-            let mut header = Vec::new();
-            if let Err(e) = reader.read_until(b'\n', &mut header).await {
-                warn!("failed to read port header: {}", e);
-                return;
-            }
-
-            let port: u16 = String::from_utf8_lossy(&header).trim().parse().unwrap_or(0);
-
-            if port == 0 {
-                warn!("invalid port header");
-                return;
-            }
-
-            // 2. Connect to local service
+            // ---- CONNECT TO LOCAL SERVICE ----
             let mut local = match TcpStream::connect(("127.0.0.1", port)).await {
-                Ok(c) => c,
+                Ok(s) => s,
                 Err(e) => {
                     warn!("failed to connect to local {}: {}", port, e);
                     return;
                 }
             };
 
-            // 3. Proxy remaining stream data
-            let mut stream = reader.into_inner();
-            let _ = match io::copy_bidirectional(&mut stream, &mut local).await {
-                Ok((_a, _b)) => info!("proxy closed cleanly"),
-                Err(e) => info!("proxy closed with error: {}", e),
+            // ---- PROXY IO ----
+            let _ = match io::copy_bidirectional(&mut yamux_stream, &mut local).await {
+                Ok(_) => info!("proxy closed cleanly"),
+                Err(e) => info!("proxy closed with error: {:?}", e),
             };
         });
     }
@@ -348,6 +344,38 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     // register / run streams as needed
     Ok(())
 }
+
+async fn read_port_line<S>(stream: &mut S) -> io::Result<u16>
+where
+    S: AsyncReadExt + Unpin,
+{
+    let mut line = Vec::new();
+
+    loop {
+        let mut byte = [0u8; 1];
+        let n = stream.read(&mut byte).await?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "EOF while reading port line",
+            ));
+        }
+
+        if byte[0] == b'\n' {
+            break;
+        }
+
+        line.push(byte[0]);
+    }
+
+    let port = String::from_utf8_lossy(&line)
+        .trim()
+        .parse::<u16>()
+        .unwrap_or(0);
+
+    Ok(port)
+}
+
 
 // Agent-specific: Send heartbeat with metrics and services
 #[cfg(feature = "agent")]

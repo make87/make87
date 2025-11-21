@@ -1,120 +1,143 @@
-use crate::rest::auth::validate_token_via_ws;
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket};
 use futures::{SinkExt, StreamExt};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
-    process::Command,
     select,
     time::{timeout, Duration},
 };
 use tracing::error;
 
+use std::{io::Read, io::Write, sync::Arc};
+
 pub async fn handle_terminal_ws(socket: WebSocket) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    // --- Authenticate client ---
-    if let Err(e) = validate_token_via_ws(&mut ws_tx, &mut ws_rx, true).await {
-        error!("auth failed: {}", e);
+    if let Err(e) = ws_tx
+        .send(Message::Text("Initializing shell...\n".into()))
+        .await
+    {
+        error!("Failed to send initialization message: {}", e);
         return;
     }
 
-    // --- Spawn SSH child process ---
-    let mut child = match Command::new("ssh")
-        .arg("localhost")
-        .arg("-tt")
-        .arg("-o")
-        .arg("LogLevel=QUIET")
-        .arg("-o")
-        .arg("BatchMode=yes")
-        .arg("-o")
-        .arg("RequestTTY=force")
-        .env("TERM", "xterm-256color")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
+    // --------------------------------------------------------
+    // 1. Create PTY pair
+    // --------------------------------------------------------
+    let pty_system = native_pty_system();
+
+    let pair = match pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(p) => p,
         Err(e) => {
             let _ = ws_tx
                 .send(Message::Text(Utf8Bytes::from(format!(
-                    "Failed to start SSH: {e}"
+                    "Failed to create PTY: {e}\n"
                 ))))
                 .await;
             return;
         }
     };
 
-    let stdin = match child.stdin.take() {
-        Some(stdin) => stdin,
-        None => return,
-    };
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => return,
-    };
-    let stderr = match child.stderr.take() {
-        Some(stderr) => stderr,
-        None => return,
+    // --------------------------------------------------------
+    // 2. Spawn shell into the PTY
+    // --------------------------------------------------------
+    let shell = if cfg!(windows) {
+        "powershell.exe"
+    } else {
+        "/bin/bash"
     };
 
-    let mut stdin_writer = BufWriter::new(stdin);
-    let mut stdout_reader = tokio::io::BufReader::new(stdout);
-    let mut stderr_reader = tokio::io::BufReader::new(stderr);
+    let mut cmd = CommandBuilder::new(shell);
+    cmd.env("TERM", "xterm-256color");
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let (ready_tx, mut ready_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let mut child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = ws_tx
+                .send(Message::Text(Utf8Bytes::from(format!(
+                    "Failed to spawn shell: {e}\n"
+                ))))
+                .await;
+            return;
+        }
+    };
 
-    // --- STDOUT reader task ---
-    let tx1 = tx.clone();
-    let ready1 = ready_tx.clone();
-    tokio::spawn(async move {
-        let mut buf = [0u8; 128];
-        let mut sent = false;
+    // Master side: reader + writer (sync I/O)
+    let reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = ws_tx
+                .send(Message::Text(Utf8Bytes::from(format!(
+                    "Failed to get PTY reader: {e}\n"
+                ))))
+                .await;
+            let _ = child.kill();
+            return;
+        }
+    };
+    let writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = ws_tx
+                .send(Message::Text(Utf8Bytes::from(format!(
+                    "Failed to get PTY writer: {e}\n"
+                ))))
+                .await;
+            let _ = child.kill();
+            return;
+        }
+    };
+    let writer = Arc::new(Mutex::new(writer));
+
+    // --------------------------------------------------------
+    // 3. PTY → WS reader task (blocking thread)
+    // --------------------------------------------------------
+    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (ready_tx, ready_rx) = oneshot::channel::<()>();
+    let tx_out = tx.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut reader = reader;
+        let mut buf = [0u8; 1024];
+
+        // wrap Sender in Option so we can send exactly once
+        let mut ready_opt = Some(ready_tx);
+
         loop {
-            match stdout_reader.read(&mut buf).await {
+            match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if !sent {
-                        let _ = ready1.send(()).await;
-                        sent = true;
+                    if let Some(tx) = ready_opt.take() {
+                        // send “ready” exactly once
+                        let _ = tx.send(());
                     }
-                    let _ = tx1.send(String::from_utf8_lossy(&buf[..n]).to_string());
+                    let _ = tx_out.send(buf[..n].to_vec());
                 }
                 Err(_) => break,
             }
         }
-        if !sent {
-            let _ = ready1.send(()).await;
+
+        // if shell produced no output before EOF,
+        // we still ensure ready is sent exactly once
+        if let Some(tx) = ready_opt.take() {
+            let _ = tx.send(());
         }
     });
 
-    // --- STDERR reader task ---
-    let tx2 = tx.clone();
-    tokio::spawn(async move {
-        let mut buf = [0u8; 128];
-        loop {
-            match stderr_reader.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = tx2.send(String::from_utf8_lossy(&buf[..n]).to_string());
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // --- Wait for child readiness ---
-    if timeout(Duration::from_secs(2), ready_rx.recv())
-        .await
-        .is_err()
-    {
+    // --------------------------------------------------------
+    // 4. Wait for shell readiness
+    // --------------------------------------------------------
+    if timeout(Duration::from_secs(2), ready_rx).await.is_err() {
         let _ = ws_tx
             .send(Message::Text(Utf8Bytes::from_static(
-                "SSH shell failed to start within timeout\n",
+                "Shell failed to start within timeout\n",
             )))
             .await;
-        let _ = child.kill().await;
+        let _ = child.kill();
         return;
     }
 
@@ -124,33 +147,55 @@ pub async fn handle_terminal_ws(socket: WebSocket) {
         )))
         .await;
 
-    // --- Main IO loop (WebSocket <-> SSH) ---
+    // --------------------------------------------------------
+    // 5. Main loop: WebSocket <-> PTY
+    // --------------------------------------------------------
     loop {
         select! {
-            // WebSocket → SSH
+            // WebSocket → PTY
             Some(Ok(msg)) = ws_rx.next() => {
                 match msg {
                     Message::Text(text) => {
-                        if stdin_writer.write_all(text.as_bytes()).await.is_err() { break; }
-                        if stdin_writer.flush().await.is_err() { break; }
+                        let data = text.clone();
+                        let writer = Arc::clone(&writer);
+                        if tokio::task::spawn_blocking(move || {
+                            let mut w = writer.blocking_lock();
+                            w.write_all(&data.as_bytes())?;
+                            w.flush()
+                        }).await.is_err() {
+                            break;
+                        }
                     }
                     Message::Binary(bin) => {
-                        if stdin_writer.write_all(&bin).await.is_err() { break; }
-                        if stdin_writer.flush().await.is_err() { break; }
+                        let data = bin.to_vec();
+                        let writer = Arc::clone(&writer);
+                        if tokio::task::spawn_blocking(move || {
+                            let mut w = writer.blocking_lock();
+                            w.write_all(&data)?;
+                            w.flush()
+                        }).await.is_err() {
+                            break;
+                        }
                     }
                     Message::Close(_) => break,
                     _ => {}
                 }
             }
-            // SSH → WebSocket
+
+            // PTY → WebSocket
             Some(out) = rx.recv() => {
-                if ws_tx.send(Message::Text(Utf8Bytes::from(out))).await.is_err() {
+                let text = String::from_utf8_lossy(&out).to_string();
+                if ws_tx.send(Message::Text(Utf8Bytes::from(text))).await.is_err() {
                     break;
                 }
             }
+
             else => break,
         }
     }
 
-    let _ = child.kill().await;
+    // --------------------------------------------------------
+    // 6. Cleanup
+    // --------------------------------------------------------
+    let _ = child.kill();
 }
