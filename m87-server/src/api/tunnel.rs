@@ -164,8 +164,8 @@ pub async fn proxy_to_device_rest(
         return Ok(());
     };
 
-    let mut sess = conn_arc.lock().await;
-    let mut sub = match sess.open_stream().await {
+    let mut control = conn_arc.lock().await;
+    let mut sub = match control.open_stream().await {
         Ok(s) => s,
         Err(_) => {
             inbound
@@ -176,6 +176,7 @@ pub async fn proxy_to_device_rest(
             return Ok(());
         }
     };
+    drop(control);
 
     let rest_port = device.config.server_port;
     sub.write_all(format!("{rest_port}\n").as_bytes()).await?;
@@ -184,6 +185,7 @@ pub async fn proxy_to_device_rest(
     if !leftover_bytes.is_empty() {
         sub.write_all(leftover_bytes).await?;
     }
+    sub.flush().await?;
 
     tokio::io::copy_bidirectional(inbound, &mut sub).await?;
     Ok(())
@@ -346,18 +348,17 @@ async fn handle_forward_connection(
         return Ok(());
     };
 
-    let mut sess = conn_arc.lock().await;
-    let mut sub = sess
+    let mut control = conn_arc.lock().await;
+    let mut sub = control
         .open_stream()
         .await
         .map_err(|_| ServerError::internal_error("yamux open_stream failed"))?;
+    drop(control);
 
     sub.write_all(format!("{}\n", forward_doc.target_port).as_bytes())
         .await?;
-
-    tokio::spawn(async move {
-        let _ = proxy_bidirectional(&mut inbound, &mut sub).await;
-    });
+    sub.flush().await?;
+    let _ = proxy_bidirectional(&mut inbound, &mut sub).await;
 
     Ok(())
 }

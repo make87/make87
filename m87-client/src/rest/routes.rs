@@ -50,7 +50,7 @@ where
                 .get(header::SEC_WEBSOCKET_PROTOCOL)
                 .and_then(|h| h.to_str().ok());
 
-            let jwt = match proto {
+            let jwt = match &proto {
                 Some(p) if p.starts_with("bearer.") => p.trim_start_matches("bearer.").to_string(),
                 _ => {
                     return (
@@ -69,8 +69,9 @@ where
                         .into_response();
                 }
             };
+            let protocol_string = format!("bearer.{jwt}");
+            let ws = ws.protocols([protocol_string]);
 
-            // Success — upgrade and pass claims + socket
             ws.on_upgrade(move |socket| handler(socket)).into_response()
         })
     }

@@ -290,6 +290,7 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     info!("control session created");
     // continuously poll session to handle keep-alives, frame exchange
     while let Some(Ok(mut yamux_stream)) = sess.next().await {
+        info!("new yamux stream");
         tokio::spawn(async move {
             // ---- READ PORT HEADER EXACTLY ----
             let port = match read_port_line(&mut yamux_stream).await {
