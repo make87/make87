@@ -489,15 +489,47 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     while let Some(Ok(mut yamux_stream)) = sess.next().await {
         info!("new yamux stream");
         tokio::spawn(async move {
-            // ---- READ PORT HEADER EXACTLY ----
-            let port = match read_port_line(&mut yamux_stream).await {
-                Ok(p) if p > 0 => p,
-                Ok(_) => {
-                    warn!("invalid port header");
-                    return;
-                }
+            // ---- READ PORT HEADER ----
+            let port_str = match read_line_string(&mut yamux_stream).await {
+                Ok(s) => s.trim().to_string(),
                 Err(e) => {
                     warn!("failed to read port header: {:?}", e);
+                    return;
+                }
+            };
+
+            // ---- HANDLE DOCKER SPECIAL CASE ----
+            if port_str == "docker" {
+                #[cfg(unix)]
+                {
+                    use tokio::net::UnixStream;
+                    let mut docker_sock = match UnixStream::connect("/var/run/docker.sock").await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("failed to connect to Docker socket: {:?}", e);
+                            return;
+                        }
+                    };
+
+                    let _ = match io::copy_bidirectional(&mut yamux_stream, &mut docker_sock).await {
+                        Ok(_) => info!("docker proxy closed cleanly"),
+                        Err(e) => info!("docker proxy closed with error: {:?}", e),
+                    };
+                }
+
+                #[cfg(not(unix))]
+                {
+                    warn!("Docker socket proxying not supported on this platform");
+                }
+
+                return;
+            }
+
+            // ---- NORMAL TCP PORT FORWARDING ----
+            let port: u16 = match port_str.parse() {
+                Ok(p) if p > 0 => p,
+                _ => {
+                    warn!("invalid port header: {}", port_str);
                     return;
                 }
             };
@@ -519,6 +551,32 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     info!("control session exited");
     // register / run streams as needed
     Ok(())
+}
+
+async fn read_line_string<S>(stream: &mut S) -> io::Result<String>
+where
+    S: AsyncReadExt + Unpin,
+{
+    let mut line = Vec::new();
+
+    loop {
+        let mut byte = [0u8; 1];
+        let n = stream.read(&mut byte).await?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "EOF while reading line",
+            ));
+        }
+
+        if byte[0] == b'\n' {
+            break;
+        }
+
+        line.push(byte[0]);
+    }
+
+    String::from_utf8(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 async fn read_port_line<S>(stream: &mut S) -> io::Result<u16>
