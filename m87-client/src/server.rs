@@ -41,7 +41,7 @@ pub async fn get_server_url_and_owner_reference(
     // ------------------------------------------------------------
     // 1. POST /login → returns ID
     // ------------------------------------------------------------
-    let post_url = format!("{}/login", make87_api_url);
+    let post_url = format!("{}/v1/device/login", make87_api_url);
 
     #[derive(serde::Serialize)]
     struct EmptyBody {}
@@ -51,7 +51,11 @@ pub async fn get_server_url_and_owner_reference(
         .json(&EmptyBody {})
         .send()
         .await?
-        .error_for_status()?
+        .error_for_status()
+        .map_err(|e| {
+            error!("{:?}", e);
+            e
+        })?
         .json()
         .await?;
 
@@ -68,7 +72,7 @@ pub async fn get_server_url_and_owner_reference(
     // ------------------------------------------------------------
     // 3. Poll GET /login/{id} until url != None
     // ------------------------------------------------------------
-    let get_url = format!("{}/login/{}", make87_api_url, id);
+    let get_url = format!("{}/v1/device/login/{}", make87_api_url, id);
 
     #[derive(serde::Deserialize)]
     struct LoginUrlResponse {

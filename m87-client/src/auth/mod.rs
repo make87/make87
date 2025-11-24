@@ -272,6 +272,7 @@ pub async fn register_device(
                 Ok(value) => value,
                 Err(_) => {
                     if config.api_url.is_none() {
+                        info!("Missing server url and owner reference. Starting registration process...");
                         let (url, owner) = server::get_server_url_and_owner_reference(
                             &config.make87_api_url,
                             &config.make87_app_url,

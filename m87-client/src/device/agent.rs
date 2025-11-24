@@ -307,7 +307,7 @@ async fn login_and_run() -> Result<()> {
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
         .expect("failed to install ring crypto provider");
     //
-    let config = Config::load().context("Failed to load configuration")?;
+    let config = Config::load()?;
     let system_info = get_system_info(config.enable_geo_lookup).await?;
     loop {
         let success = register_device(config.owner_reference.clone(), system_info.clone()).await;
@@ -316,6 +316,8 @@ async fn login_and_run() -> Result<()> {
         }
         sleep(Duration::from_secs(1)).await;
     }
+    // reload config in case it changed during registration
+    let config = Config::load()?;
     let token = AuthManager::get_device_token()?;
     let res = report_device_details(
         &config.get_server_url(),
