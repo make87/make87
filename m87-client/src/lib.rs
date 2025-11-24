@@ -1,9 +1,9 @@
 // === Core modules ===
-pub mod device;
-pub mod devices;
 pub mod app;
 pub mod auth;
 pub mod config;
+pub mod device;
+pub mod devices;
 
 // Agent-specific modules (Linux-only via build.rs)
 #[cfg(feature = "agent")]
@@ -14,6 +14,7 @@ pub mod stack;
 pub mod update;
 pub mod util;
 
+pub mod tui;
 // === CLI entrypoint ===
 pub mod cli;
 

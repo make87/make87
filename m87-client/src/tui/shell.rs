@@ -11,10 +11,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
         .unwrap();
 
     let config = Config::load()?;
-    let server_url = config.get_server_url();
-    let base = server_url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
+    let base = config.get_server_hostname();
     let dev = devices::list_devices()
         .await?
         .into_iter()

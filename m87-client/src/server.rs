@@ -304,7 +304,7 @@ pub async fn list_forwards(
 ) -> Result<Vec<PublicForward>> {
     let client = get_client(trust_invalid_server_cert)?;
     let url = format!(
-        "{}/device/{}/forwards",
+        "{}/device/{}/forward",
         api_url.trim_end_matches('/'),
         device_id
     );

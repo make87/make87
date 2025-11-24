@@ -97,11 +97,7 @@ pub async fn create_tunnel(
     Ok(())
 }
 
-pub async fn open_local_tunnel(
-    device_name: &str,
-    name: &str,
-    local_port: Option<u16>,
-) -> Result<()> {
+pub async fn open_local_tunnel(device_name: &str, name: &str, local_port: u16) -> Result<()> {
     let config = Config::load()?;
 
     let dev = devices::list_devices()
@@ -110,12 +106,9 @@ pub async fn open_local_tunnel(
         .find(|d| d.name == device_name)
         .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?;
 
-    if let Some(port) = local_port {
-        // open tokio tcp conneciton to local port and bridge to rmeote port
-        let host_name = format!("{}-{}.{}", name, dev.short_id, config.get_server_hostname());
+    let host_name = format!("{}-{}.{}", name, dev.short_id, config.get_server_hostname());
 
-        let _ = forward_server_port(&host_name, port, config.trust_invalid_server_cert).await?;
-    }
+    let _ = forward_server_port(&host_name, local_port, config.trust_invalid_server_cert).await?;
 
     Ok(())
 }

@@ -4,10 +4,9 @@ use clap::{Parser, Subcommand};
 use crate::auth;
 use crate::config::Config;
 use crate::device;
-use crate::device::logs;
-use crate::device::shell;
 use crate::device::tunnel;
 use crate::devices;
+use crate::tui;
 use crate::update;
 use crate::util;
 
@@ -137,7 +136,7 @@ pub enum DeviceCommand {
         #[arg(long)]
         persist: bool,
         #[arg(long)]
-        name: Option<String>,
+        name: String,
         #[arg(long)]
         ips: Option<String>,
         #[arg(long)]
@@ -147,10 +146,7 @@ pub enum DeviceCommand {
         #[arg(long)]
         local_port: Option<u16>,
     },
-    Tunnels {
-        #[command(subcommand)]
-        cmd: DeviceTunnelsCommand,
-    },
+    Tunnels,
     Ls {
         path: Vec<String>,
     },
@@ -170,12 +166,6 @@ pub enum DeviceCommand {
         #[arg(required = true, last = true)]
         command: Vec<String>,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum DeviceTunnelsCommand {
-    List,
-    Close { port: u16 },
 }
 
 #[cfg(feature = "agent")]
@@ -498,7 +488,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
 
     match cmd.command {
         DeviceCommand::Shell => {
-            let _ = shell::run_shell(&device).await?;
+            let _ = tui::shell::run_shell(&device).await?;
             Ok(())
         }
 
@@ -514,9 +504,9 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         } => {
             // split by ,
             let ips = ips.map(|f| f.split(",").map(|s| s.to_string()).collect::<Vec<String>>());
-            let _ = tunnel::create_tunnel(&device, port, ips, add_own_ip, open, name).await?;
+            let _ = tunnel::create_tunnel(&device, port, ips, add_own_ip, open, &name).await?;
             if let Some(localport) = local_port {
-                let _ = tunnel::open_local_tunnel(&device, localport, name).await?;
+                let _ = tunnel::open_local_tunnel(&device, &name, localport).await?;
                 if !persist {
                     let _ = tunnel::delete_tunnel(&device, port).await?;
                 }
@@ -524,22 +514,26 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             Ok(())
         }
 
-        DeviceCommand::Tunnels {
-            cmd: DeviceTunnelsCommand::List,
-        } => {
-            let tunnels = tunnel::list_tunnels(&device).await?;
-            println!("Tunnels on {}: {:#?}", device, tunnels);
+        DeviceCommand::Tunnels => {
+            let _ = tui::tunnels::show_forwards_tui(&device).await?;
             Ok(())
         }
 
-        DeviceCommand::Tunnels {
-            cmd: DeviceTunnelsCommand::Close { port },
-        } => {
-            let tunnels = tunnel::delete_tunnel(&device, port).await?;
-            println!("Closed tunnel on {}: {}", device, port);
-            Ok(())
-        }
+        // DeviceCommand::Tunnels {
+        //     cmd: DeviceTunnelsCommand::List,
+        // } => {
+        //     let tunnels = tunnel::list_tunnels(&device).await?;
+        //     println!("Tunnels on {}: {:#?}", device, tunnels);
+        //     Ok(())
+        // }
 
+        // DeviceCommand::Tunnels {
+        //     cmd: DeviceTunnelsCommand::Close { port },
+        // } => {
+        //     let tunnels = tunnel::delete_tunnel(&device, port).await?;
+        //     println!("Closed tunnel on {}: {}", device, port);
+        //     Ok(())
+        // }
         DeviceCommand::Ls { path } => {
             println!("Would run ls on {} with {:?}", device, path);
             bail!("Not implemented");
@@ -551,13 +545,13 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         }
 
         DeviceCommand::Logs { follow, tail } => {
-            logs::run_logs(&device).await?;
+            tui::logs::run_logs(&device).await?;
             Ok(())
         }
 
         DeviceCommand::Stats => {
-            println!("Would show stats for {}", device);
-            bail!("Not implemented");
+            tui::metrics::run_metrics(&device).await?;
+            Ok(())
         }
 
         DeviceCommand::Cmd {
