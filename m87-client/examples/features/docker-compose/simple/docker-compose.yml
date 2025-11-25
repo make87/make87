@@ -1,0 +1,15 @@
+services:
+  pause:
+    image: registry.k8s.io/pause:3.9
+    container_name: test-pause
+    restart: unless-stopped
+
+  custom:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: test-custom
+    init: true
+    restart: unless-stopped
+    environment:
+      - TEST_VAR=hello-from-compose
