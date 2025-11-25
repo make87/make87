@@ -540,8 +540,8 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         }
 
         DeviceCommand::Docker { args } => {
-            println!("Would run docker on {} with {:?}", device, args);
-            bail!("Not implemented");
+            device::docker::run_docker_command(&device, args.clone()).await?;
+            Ok(())
         }
 
         DeviceCommand::Logs { follow, tail } => {
