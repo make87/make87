@@ -209,22 +209,6 @@ enum DevicesCommands {
 }
 
 pub async fn cli() -> anyhow::Result<()> {
-    // TODO: Fix device name collision issue
-    // Currently, if a device is named the same as a built-in command (e.g., "agent", "login", "devices"),
-    // the CLI will interpret it as the built-in command instead of a device name.
-    //
-    // Example of the problem:
-    //   m87 agent ssh  <- This triggers the agent subcommand, NOT ssh to device named "agent"
-    //
-    // Potential solutions:
-    // 1. Check if second arg matches known device commands (ssh, tunnel, sync, etc.) and treat as device command
-    // 2. Try parsing as device command first, fall back to built-in commands
-    // 3. Reserve certain names and validate during device registration
-    // 4. Use a prefix like @ or : for device names (changes API spec)
-    //
-    // Recommended: Solution 1 - disambiguate based on second argument pattern
-    // This preserves the API spec while allowing any device name.
-
     let cli = Cli::parse();
 
     match cli.command {
@@ -458,27 +442,6 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             let _ = tunnel::open_local_tunnel(&device, remote_port, local_port).await?;
             Ok(())
         }
-
-        // DeviceCommand::Tunnels => {
-        //     let _ = tui::tunnels::show_forwards_tui(&device).await?;
-        //     Ok(())
-        // }
-
-        // DeviceCommand::Tunnels {
-        //     cmd: DeviceTunnelsCommand::List,
-        // } => {
-        //     let tunnels = tunnel::list_tunnels(&device).await?;
-        //     println!("Tunnels on {}: {:#?}", device, tunnels);
-        //     Ok(())
-        // }
-
-        // DeviceCommand::Tunnels {
-        //     cmd: DeviceTunnelsCommand::Close { port },
-        // } => {
-        //     let tunnels = tunnel::delete_tunnel(&device, port).await?;
-        //     println!("Closed tunnel on {}: {}", device, port);
-        //     Ok(())
-        // }
         DeviceCommand::Ls { path } => {
             println!("Would run ls on {} with {:?}", device, path);
             bail!("Not implemented");
