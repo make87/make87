@@ -4,6 +4,7 @@ mod container_terminal;
 mod docker;
 mod logs;
 mod metrics;
+mod port;
 pub mod routes;
 mod shared;
 mod terminal;

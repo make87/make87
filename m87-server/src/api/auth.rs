@@ -14,7 +14,6 @@ use crate::models::device_auth_request::{
     DeviceAuthRequestCheckResponse, DeviceAuthRequestDoc,
 };
 use crate::models::roles::Role;
-use crate::models::ssh_key::{SSHPubKeyCreateRequest, SSHPubKeyDoc};
 use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
 use crate::util::app_state::AppState;
 use crate::util::pagination::RequestPagination;
@@ -24,7 +23,6 @@ pub fn create_route() -> Router<AppState> {
         .route("/request", get(get_auth_requests).post(post_auth_request))
         .route("/request/check", post(check_auth_request))
         .route("/request/approve", post(handle_auth_request))
-        .route("/ssh", post(add_ssh_pub_key).get(get_ssh_keys))
 }
 
 async fn post_auth_request(
@@ -174,46 +172,4 @@ async fn handle_auth_request(
             Ok(ServerResponse::builder().ok().build())
         }
     }
-}
-
-async fn add_ssh_pub_key(
-    claims: Claims,
-    State(state): State<AppState>,
-    Json(payload): Json<SSHPubKeyCreateRequest>,
-) -> ServerAppResult<()> {
-    if !claims.has_scope_and_role(&payload.owner_scope, Role::Admin) {
-        return Err(ServerError::forbidden(
-            "You don't have admin role in this scope",
-        ));
-    }
-
-    let _ = SSHPubKeyDoc::create(&state.db, payload).await?;
-
-    Ok(ServerResponse::builder().ok().build())
-}
-
-async fn get_ssh_keys(
-    claims: Claims,
-    State(state): State<AppState>,
-    pagination: RequestPagination,
-) -> ServerAppResult<Vec<SSHPubKeyDoc>> {
-    let col = state.db.ssh_keys();
-
-    let list_fut = claims.list_with_access(&col, &pagination);
-    let count_fut = claims.count_with_access(&col);
-
-    let (list_res, count_res) = join!(list_fut, count_fut);
-
-    let ssh_keys = list_res?;
-    let total_count = count_res?;
-
-    Ok(ServerResponse::builder()
-        .body(ssh_keys)
-        .pagination(ResponsePagination {
-            count: total_count,
-            offset: pagination.offset,
-            limit: pagination.limit,
-        })
-        .ok()
-        .build())
 }

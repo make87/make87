@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::{
     models::{
         api_key::ApiKeyDoc, device::DeviceDoc, device_auth_request::DeviceAuthRequestDoc,
-        forward::ForwardDoc, roles::RoleDoc, ssh_key::SSHPubKeyDoc, user::UserDoc,
+        roles::RoleDoc, user::UserDoc,
     },
     response::ServerResult,
 };
@@ -49,14 +49,6 @@ impl Mongo {
 
     pub fn api_keys(&self) -> Collection<ApiKeyDoc> {
         self.col("api_keys")
-    }
-
-    pub fn ssh_keys(&self) -> Collection<SSHPubKeyDoc> {
-        self.col("ssh_keys")
-    }
-
-    pub fn forwards(&self) -> Collection<ForwardDoc> {
-        self.col("forwards")
     }
 
     pub async fn ensure_indexes(&self) -> ServerResult<()> {
@@ -111,21 +103,6 @@ impl Mongo {
             )
             .await?;
 
-        self.ssh_keys()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "owner_scope": 1 })
-                    .build(),
-            )
-            .await?;
-        self.ssh_keys()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "allowed_scopes": 1 })
-                    .build(),
-            )
-            .await?;
-
         self.api_keys()
             .create_index(IndexModel::builder().keys(doc! { "key_id": 1 }).build())
             .await?;
@@ -135,22 +112,6 @@ impl Mongo {
             .create_index(IndexModel::builder().keys(doc! { "sub": 1 }).build())
             .await?;
 
-        self.forwards()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "device_id": 1, "target_port": 1 })
-                    .options(IndexOptions::builder().unique(true).build())
-                    .build(),
-            )
-            .await?;
-
-        self.forwards()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "device_short_id": 1 })
-                    .build(),
-            )
-            .await?;
         Ok(())
     }
 }

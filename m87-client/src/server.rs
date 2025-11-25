@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Context, Result};
+use axum::http::HeaderValue;
 use futures::StreamExt;
-use m87_shared::forward::{CreateForward, ForwardAccess, PublicForward};
 use reqwest::Client;
 use tokio::{
-    io::{self, AsyncReadExt},
-    net::TcpStream,
+    io::{self},
+    net::{TcpListener, TcpStream},
 };
+use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
 use tokio_yamux::{Config as YamuxConfig, Session};
 use tracing::{error, info, warn};
 
@@ -13,7 +14,7 @@ use tracing::{error, info, warn};
 use crate::device::services::service_info::ServiceInfo;
 #[cfg(feature = "agent")]
 use crate::device::system_metrics::SystemMetrics;
-use crate::{auth::AuthManager, config::Config, retry_async};
+use crate::{auth::AuthManager, config::Config, retry_async, util::websocket::ClientByteWebSocket};
 
 use crate::util::tls::get_tls_connection;
 
@@ -253,140 +254,6 @@ pub async fn report_device_details(
     }
 }
 
-pub async fn request_forward(
-    api_url: &str,
-    token: &str,
-    device_id: &str,
-    device_short_id: &str,
-    target_port: u16,
-    access: ForwardAccess,
-    name: &str,
-    trust_invalid_server_cert: bool,
-) -> Result<()> {
-    let client = get_client(trust_invalid_server_cert)?;
-    let url = format!(
-        "{}/device/{}/forward",
-        api_url.trim_end_matches('/'),
-        device_id
-    );
-
-    let body = CreateForward {
-        name: Some(name.to_string()),
-        access,
-        device_short_id: device_short_id.to_string(),
-        device_id: device_id.to_string(),
-        target_port,
-    };
-
-    let res = retry_async!(
-        3,
-        3,
-        client.post(&url).bearer_auth(token).json(&body).send()
-    );
-    if let Err(e) = res {
-        eprintln!("[Device] Error requesting forward: {}", e);
-        return Err(anyhow!(e));
-    }
-    match res.unwrap().error_for_status() {
-        Ok(_r) => Ok(()),
-        Err(e) => {
-            eprintln!("[Device] Error requesting forward: {}", e);
-            Err(anyhow!(e))
-        }
-    }
-}
-
-pub async fn list_forwards(
-    api_url: &str,
-    token: &str,
-    device_id: &str,
-    trust_invalid_server_cert: bool,
-) -> Result<Vec<PublicForward>> {
-    let client = get_client(trust_invalid_server_cert)?;
-    let url = format!(
-        "{}/device/{}/forward",
-        api_url.trim_end_matches('/'),
-        device_id
-    );
-
-    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send());
-    if let Err(e) = res {
-        eprintln!("[Device] Error listing forwards: {}", e);
-        return Err(anyhow!(e));
-    }
-    match res.unwrap().error_for_status() {
-        Ok(r) => {
-            let forwards = r.json::<Vec<PublicForward>>().await?;
-            Ok(forwards)
-        }
-        Err(e) => {
-            eprintln!("[Device] Error listing forwards: {}", e);
-            Err(anyhow!(e))
-        }
-    }
-}
-
-pub async fn delete_forward(
-    api_url: &str,
-    token: &str,
-    device_id: &str,
-    trust_invalid_server_cert: bool,
-    target_port: u16,
-) -> Result<()> {
-    let client = get_client(trust_invalid_server_cert)?;
-    let url = format!(
-        "{}/device/{}/forward/{}",
-        api_url.trim_end_matches('/'),
-        device_id,
-        target_port
-    );
-
-    let res = retry_async!(3, 3, client.delete(&url).bearer_auth(token).send());
-    if let Err(e) = res {
-        eprintln!("[Device] Error deleting forward: {}", e);
-        return Err(anyhow!(e));
-    }
-    match res.unwrap().error_for_status() {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            eprintln!("[Device] Error deleting forward: {}", e);
-            Err(anyhow!(e))
-        }
-    }
-}
-
-pub async fn get_forward(
-    api_url: &str,
-    token: &str,
-    device_id: &str,
-    trust_invalid_server_cert: bool,
-    target_port: u16,
-) -> Result<PublicForward> {
-    let client = get_client(trust_invalid_server_cert)?;
-    let url = format!(
-        "{}/device/{}/forward/{}",
-        api_url.trim_end_matches('/'),
-        device_id,
-        target_port
-    );
-
-    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send());
-    if let Err(e) = res {
-        eprintln!("[Device] Error getting forward: {}", e);
-        return Err(anyhow!(e));
-    }
-    match res.unwrap().error_for_status() {
-        Ok(r) => {
-            let forward = r.json().await?;
-            Ok(forward)
-        }
-        Err(e) => {
-            eprintln!("[Device] Error getting forward: {}", e);
-            Err(anyhow!(e))
-        }
-    }
-}
-
 // Agent-specific: Request token for control tunnel
 #[cfg(feature = "agent")]
 pub async fn request_control_tunnel_token(
@@ -436,38 +303,7 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
 
     // 1. TCP connect
     let control_host = format!("control.{}", config.get_server_hostname());
-
-    // let tcp = connect_host(&control_host, 443).await?;
-
-    // // 2. Root store (use system roots or webpki)
-    // let mut root_store = RootCertStore::empty();
-    // root_store.roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-
-    // // 3. TLS client config
-    // info!(
-    //     "Creating TLS client config with trust_invalid_server_cert: {}",
-    //     config.trust_invalid_server_cert
-    // );
-    // let tls_config = if config.trust_invalid_server_cert {
-    //     warn!("Trusting invalid server certificate");
-    //     Arc::new(
-    //         ClientConfig::builder()
-    //             .dangerous()
-    //             .with_custom_certificate_verifier(Arc::new(NoVerify))
-    //             .with_no_client_auth(),
-    //     )
-    // } else {
-    //     Arc::new(
-    //         ClientConfig::builder()
-    //             .with_root_certificates(root_store)
-    //             .with_no_client_auth(),
-    //     )
-    // };
-
-    // // 4. TLS handshake (SNI)
-    // let connector = TlsConnector::from(tls_config);
-    // let server_name = ServerName::try_from(control_host.clone()).context("invalid SNI name")?;
-    // let mut tls = connector.connect(server_name, tcp).await?;
+    let local_rest_port = config.server_port;
     let mut tls =
         get_tls_connection(control_host.to_string(), config.trust_invalid_server_cert).await?;
 
@@ -489,55 +325,10 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     while let Some(Ok(mut yamux_stream)) = sess.next().await {
         info!("new yamux stream");
         tokio::spawn(async move {
-            // ---- READ PORT HEADER ----
-            let port_str = match read_line_string(&mut yamux_stream).await {
-                Ok(s) => s.trim().to_string(),
-                Err(e) => {
-                    warn!("failed to read port header: {:?}", e);
-                    return;
-                }
-            };
-
-            // ---- HANDLE DOCKER SPECIAL CASE ----
-            if port_str == "docker" {
-                #[cfg(unix)]
-                {
-                    use tokio::net::UnixStream;
-                    let mut docker_sock = match UnixStream::connect("/var/run/docker.sock").await {
-                        Ok(s) => s,
-                        Err(e) => {
-                            warn!("failed to connect to Docker socket: {:?}", e);
-                            return;
-                        }
-                    };
-
-                    let _ = match io::copy_bidirectional(&mut yamux_stream, &mut docker_sock).await {
-                        Ok(_) => info!("docker proxy closed cleanly"),
-                        Err(e) => info!("docker proxy closed with error: {:?}", e),
-                    };
-                }
-
-                #[cfg(not(unix))]
-                {
-                    warn!("Docker socket proxying not supported on this platform");
-                }
-
-                return;
-            }
-
-            // ---- NORMAL TCP PORT FORWARDING ----
-            let port: u16 = match port_str.parse() {
-                Ok(p) if p > 0 => p,
-                _ => {
-                    warn!("invalid port header: {}", port_str);
-                    return;
-                }
-            };
-
-            let mut local = match TcpStream::connect(("127.0.0.1", port)).await {
+            let mut local = match TcpStream::connect(("127.0.0.1", local_rest_port)).await {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("failed to connect to local {}: {}", port, e);
+                    warn!("failed to connect to local {}: {}", local_rest_port, e);
                     return;
                 }
             };
@@ -549,65 +340,7 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
         });
     }
     info!("control session exited");
-    // register / run streams as needed
     Ok(())
-}
-
-async fn read_line_string<S>(stream: &mut S) -> io::Result<String>
-where
-    S: AsyncReadExt + Unpin,
-{
-    let mut line = Vec::new();
-
-    loop {
-        let mut byte = [0u8; 1];
-        let n = stream.read(&mut byte).await?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "EOF while reading line",
-            ));
-        }
-
-        if byte[0] == b'\n' {
-            break;
-        }
-
-        line.push(byte[0]);
-    }
-
-    String::from_utf8(line).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-}
-
-async fn read_port_line<S>(stream: &mut S) -> io::Result<u16>
-where
-    S: AsyncReadExt + Unpin,
-{
-    let mut line = Vec::new();
-
-    loop {
-        let mut byte = [0u8; 1];
-        let n = stream.read(&mut byte).await?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "EOF while reading port line",
-            ));
-        }
-
-        if byte[0] == b'\n' {
-            break;
-        }
-
-        line.push(byte[0]);
-    }
-
-    let port = String::from_utf8_lossy(&line)
-        .trim()
-        .parse::<u16>()
-        .unwrap_or(0);
-
-    Ok(port)
 }
 
 // Agent-specific: Send heartbeat with metrics and services
@@ -680,5 +413,82 @@ fn get_client(trust_invalid_server_cert: bool) -> Result<Client> {
         // otherwise we verify the certificate
         let client = Client::new();
         Ok(client)
+    }
+}
+
+pub async fn tunnel_device_port(
+    host_name: &str,
+    token: &str,
+    device_short_id: &str,
+    remote_port: u16,
+    local_port: u16,
+) -> Result<()> {
+    let url = format!(
+        "wss://{}.{}/port/{}",
+        device_short_id, host_name, remote_port
+    );
+
+    // 1) Build WS request with bearer.<jwt> subprotocol
+    let mut req = url.clone().into_client_request()?;
+    req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_str(&format!("bearer.{token}"))?,
+    );
+
+    // 2) Connect WebSocket to server
+    let (ws, _) = connect_async(req).await.map_err(|e| {
+        error!("connect_async failed: {e}");
+        e
+    })?;
+    info!("Connected WebSocket to {}", &url);
+
+    // 3) Wrap WS as byte stream
+    let ws_bytes = ClientByteWebSocket::new(ws);
+
+    // 4) Create Yamux client session
+    let yamux_cfg = YamuxConfig::default();
+    let mut session = Session::new_client(ws_bytes, yamux_cfg);
+    let mut control = session.control();
+
+    // 5) Spawn driver task to poll the Yamux session
+    tokio::spawn(async move {
+        while let Some(item) = session.next().await {
+            match item {
+                Ok(_stream) => {
+                    // In this design, server never opens streams; we just ignore.
+                }
+                Err(e) => {
+                    error!("Yamux session driver error: {e}");
+                    break;
+                }
+            }
+        }
+        info!("Yamux session driver exited");
+    });
+
+    // 6) Listen on local_port and open a Yamux stream per incoming TCP connection
+    let listener = TcpListener::bind(("127.0.0.1", local_port)).await?;
+    info!("Listening on 127.0.0.1:{local_port} and forwarding to {device_short_id}:{remote_port}");
+
+    loop {
+        let (mut local_stream, addr) = listener.accept().await?;
+        info!("New local connection from {addr}");
+
+        // We open a new Yamux stream for each connection, sequentially
+        let mut remote_stream = control.open_stream().await.map_err(|e| {
+            error!("Failed to open Yamux stream: {e}");
+            e
+        })?;
+
+        tokio::spawn(async move {
+            match io::copy_bidirectional(&mut local_stream, &mut remote_stream).await {
+                Ok((_a, _b)) => {
+                    info!("Forward stream {addr} closed cleanly");
+                }
+                Err(e) => {
+                    error!("Forward stream {addr} closed with error: {e:?}");
+                }
+            }
+        });
     }
 }

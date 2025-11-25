@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use m87_shared::{forward::ForwardAccess, roles::Role};
+use m87_shared::roles::Role;
 use mongodb::bson::doc;
 use std::sync::Arc;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -8,8 +8,6 @@ use tracing::{info, warn};
 
 use crate::{
     auth::claims::Claims,
-    config::AppConfig,
-    db::Mongo,
     models::device::DeviceDoc,
     relay::relay_state::RelayState,
     response::{ServerError, ServerResult},
@@ -50,36 +48,9 @@ pub async fn handle_sni(sni: &str, mut tls: TlsStream<tokio::net::TcpStream>, st
         // e.g. "device123.", "myapp-device123."
         let prefix = prefix.trim_end_matches('.');
 
-        let parts: Vec<&str> = prefix.split('-').collect();
-        match parts.len() {
-            1 => {
-                let node_short_id = parts[0];
-                if let Err(e) = proxy_to_device_rest(&mut tls, node_short_id, state).await {
-                    warn!("device proxy failed: {e:?}");
-                }
-            }
-            n if n == 2 => {
-                let device_short_id = parts[1];
-                let forward_name = parts[0];
-                if let Err(e) = handle_forward_connection(
-                    state.relay.clone(),
-                    state.db.clone(),
-                    state.config.clone(),
-                    device_short_id.to_string(),
-                    forward_name.to_string(),
-                    tls,
-                )
-                .await
-                {
-                    warn!("forward failed: {e:?}");
-                }
-            }
-            _ => {
-                warn!("invalid SNI format: {}", sni);
-                let _ = tls.shutdown().await;
-            }
+        if let Err(e) = proxy_to_device_rest(&mut tls, prefix, state).await {
+            warn!("device proxy failed: {e:?}");
         }
-        return;
     }
 
     warn!("unmatched SNI: {}", sni);
@@ -177,9 +148,6 @@ pub async fn proxy_to_device_rest(
         }
     };
     drop(control);
-
-    let rest_port = device.config.server_port;
-    sub.write_all(format!("{rest_port}\n").as_bytes()).await?;
 
     sub.write_all(header_bytes).await?;
     if !leftover_bytes.is_empty() {
@@ -302,64 +270,6 @@ pub async fn handle_control_tunnel(
         info!("control session closed for {}", device_id);
         relay_clone.remove_tunnel(&device_id).await;
     });
-    Ok(())
-}
-
-async fn handle_forward_connection(
-    relay: Arc<RelayState>,
-    db: Arc<Mongo>,
-    config: Arc<AppConfig>,
-    device_short_id: String,
-    forward_name: String,
-    mut inbound: TlsStream<tokio::net::TcpStream>,
-) -> ServerResult<()> {
-    let forward_doc = db
-        .forwards()
-        .find_one(doc! { "device_short_id": &device_short_id, "name": &forward_name })
-        .await?
-        .ok_or_else(|| ServerError::not_found("no matching forward"))?;
-
-    match &forward_doc.access {
-        ForwardAccess::Open => {
-            // Nothing to check
-        }
-
-        ForwardAccess::IpWhitelist(whitelist) => {
-            if let Ok(peer) = inbound.get_ref().0.peer_addr() {
-                let ip = peer.ip().to_string();
-                if !whitelist.iter().any(|a| a == &ip) {
-                    warn!(
-                        "{}-{} {}blocked by IP whitelist",
-                        &forward_name, &device_short_id, &ip
-                    );
-                    let _ = inbound.get_mut().0.shutdown().await;
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    let Some(conn_arc) = relay.get_tunnel(&forward_doc.device_id.to_string()).await else {
-        warn!(
-            "{}-{} for device {} tunnel not active",
-            &forward_name, &device_short_id, &forward_doc.device_id
-        );
-        let _ = inbound.shutdown().await;
-        return Ok(());
-    };
-
-    let mut control = conn_arc.lock().await;
-    let mut sub = control
-        .open_stream()
-        .await
-        .map_err(|_| ServerError::internal_error("yamux open_stream failed"))?;
-    drop(control);
-
-    sub.write_all(format!("{}\n", forward_doc.target_port).as_bytes())
-        .await?;
-    sub.flush().await?;
-    let _ = proxy_bidirectional(&mut inbound, &mut sub).await;
-
     Ok(())
 }
 

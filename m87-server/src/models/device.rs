@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use m87_shared::forward::{CreateForward, ForwardAccess};
 use mongodb::bson::{doc, oid::ObjectId, DateTime, Document};
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +10,6 @@ pub use m87_shared::config::DeviceClientConfig;
 pub use m87_shared::device::{DeviceSystemInfo, PublicDevice};
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
 
-use crate::models::forward::ForwardDoc;
 use crate::{
     auth::{access_control::AccessControlled, claims::Claims},
     db::Mongo,
@@ -149,7 +147,6 @@ impl DeviceDoc {
     pub async fn remove_device(&self, claims: &Claims, db: &Arc<Mongo>) -> ServerResult<()> {
         let api_keys_col = db.api_keys();
         let roles_col = db.roles();
-        let forwards_col = db.forwards();
 
         // Delete associated API keys
         api_keys_col
@@ -162,12 +159,6 @@ impl DeviceDoc {
             .delete_many(doc! { "reference_id": self.api_key_id })
             .await
             .map_err(|_| ServerError::internal_error("Failed to delete roles"))?;
-
-        // remove forwards
-        forwards_col
-            .delete_many(doc! { "device_id": self.id.clone().unwrap().to_string() })
-            .await
-            .map_err(|_| ServerError::internal_error("Failed to delete forwards"))?;
 
         // Check access and delete device
         let success = claims

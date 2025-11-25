@@ -67,7 +67,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
                 break;
             }
             let mut tx = ws_tx_stdin.lock().await;
-            tx.send(tokio_tungstenite::tungstenite::Message::Binary(bytes))
+            tx.send(tokio_tungstenite::tungstenite::Message::binary(bytes))
                 .await?;
         }
         Ok::<_, anyhow::Error>(())
