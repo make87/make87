@@ -134,6 +134,7 @@ pub enum DeviceCommand {
         path: Vec<String>,
     },
     Docker {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
     Logs {
