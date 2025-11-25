@@ -128,7 +128,7 @@ pub enum DeviceCommand {
     Shell,
     Tunnel {
         remote_port: u16,
-        local_port: u16,
+        local_port: Option<u16>,
     },
     Ls {
         path: Vec<String>,
@@ -440,6 +440,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             local_port,
         } => {
             let _log_tx = init_tracing_with_log_layer("info");
+            let local_port = local_port.unwrap_or(remote_port);
             let _ = tunnel::open_local_tunnel(&device, remote_port, local_port).await?;
             Ok(())
         }
