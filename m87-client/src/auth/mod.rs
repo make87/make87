@@ -1,12 +1,16 @@
 use anyhow::{anyhow, Context, Result};
+#[cfg(feature = "agent")]
 use m87_shared::device::DeviceSystemInfo;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+#[cfg(feature = "agent")]
 use std::time::Duration;
-use tracing::info;
+use tracing::{debug, info};
+
+#[cfg(feature = "agent")]
 mod device;
 mod oauth;
 
@@ -179,6 +183,8 @@ impl AuthManager {
         Ok(())
     }
 
+    // Agent-specific: Device registration
+    #[cfg(feature = "agent")]
     pub async fn login_device(
         auth_handler: &mut device::DeviceAuthRequestHandler,
         timeout: Duration,
@@ -236,6 +242,7 @@ impl AuthManager {
     }
 }
 
+// Manager-specific: OAuth2 login for device management
 pub async fn login_cli() -> Result<()> {
     if AuthManager::has_cli_credentials()? {
         info!("Already logged in");
@@ -245,6 +252,8 @@ pub async fn login_cli() -> Result<()> {
     Ok(())
 }
 
+// Agent-specific: Device registration for agents
+#[cfg(feature = "agent")]
 pub async fn register_device(
     owner_scope: Option<String>,
     device_system_info: DeviceSystemInfo,
@@ -254,13 +263,30 @@ pub async fn register_device(
         return Ok(());
     }
 
-    let config = Config::load()?;
+    let mut config = Config::load()?;
     let owner_scope = match owner_scope {
         Some(rid) => rid,
         None => match Config::has_owner_reference()? {
             true => Config::get_owner_reference()?,
-            false => std::env::var(OWNER_REFERENCE_ENV_VAR)
-                .expect(format!("{} not set", OWNER_REFERENCE_ENV_VAR).as_str()),
+            false => match std::env::var(OWNER_REFERENCE_ENV_VAR) {
+                Ok(value) => value,
+                Err(_) => {
+                    if config.api_url.is_none() {
+                        info!("Missing server url and owner reference. Starting registration process...");
+                        let (url, owner) = server::get_server_url_and_owner_reference(
+                            &config.make87_api_url,
+                            &config.make87_app_url,
+                        )
+                        .await?;
+                        config.api_url = Some(url);
+                        config.owner_reference = Some(owner.clone());
+                        config.save()?;
+                        owner
+                    } else {
+                        return Err(anyhow::anyhow!("No owner reference provided"));
+                    }
+                }
+            },
         },
     };
     //if @ is in owner_scope prefix with user: otherwise with org:
@@ -270,7 +296,7 @@ pub async fn register_device(
         format!("org:{}", owner_scope)
     };
     let mut report_handler = device::DeviceAuthRequestHandler {
-        api_url: config.api_url.clone(),
+        api_url: config.get_server_url(),
         device_info: device_system_info,
         device_id: config.device_id,
         owner_scope,
@@ -298,26 +324,36 @@ pub async fn status() -> Result<()> {
     Ok(())
 }
 
+// Manager-specific: Logout from CLI
 pub async fn logout_cli() -> Result<()> {
     AuthManager::delete_cli_credentials().await
 }
 
+// Agent-specific: Logout device credentials
+#[cfg(feature = "agent")]
 pub async fn logout_device() -> Result<()> {
     AuthManager::delete_device_credentials().await
 }
 
+// Manager-specific: List pending device auth requests
 pub async fn list_auth_requests() -> Result<Vec<server::DeviceAuthRequest>> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
-    server::list_auth_requests(&config.api_url, &token, config.trust_invalid_server_cert).await
+    server::list_auth_requests(
+        &config.get_server_url(),
+        &token,
+        config.trust_invalid_server_cert,
+    )
+    .await
 }
 
+// Manager-specific: Approve device registration
 pub async fn accept_auth_request(request_id: &str) -> Result<()> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
 
     server::handle_auth_request(
-        &config.api_url,
+        &config.get_server_url(),
         &token,
         request_id,
         true,
@@ -326,12 +362,13 @@ pub async fn accept_auth_request(request_id: &str) -> Result<()> {
     .await
 }
 
+// Manager-specific: Reject device registration
 pub async fn reject_auth_request(request_id: &str) -> Result<()> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
 
     server::handle_auth_request(
-        &config.api_url,
+        &config.get_server_url(),
         &token,
         request_id,
         false,
