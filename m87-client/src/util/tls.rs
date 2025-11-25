@@ -6,36 +6,10 @@ use rustls::{
     pki_types::{CertificateDer, ServerName, UnixTime},
     ClientConfig, RootCertStore, SignatureScheme,
 };
-use tokio::{
-    io::{self},
-    net::TcpStream,
-};
+use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tracing::{info, warn};
 use webpki_roots::TLS_SERVER_ROOTS;
-
-// pub async fn forward_server_port(
-//     server_url: &str,
-//     local_port: u16,
-//     trust_invalid_server_cert: bool,
-// ) -> Result<()> {
-//     let mut remote = get_tls_connection(server_url.to_string(), trust_invalid_server_cert).await?;
-
-//     let mut local = match TcpStream::connect(("127.0.0.1", local_port)).await {
-//         Ok(s) => s,
-//         Err(e) => {
-//             warn!("failed to connect to local {}: {}", local_port, e);
-//             return Err(e.into());
-//         }
-//     };
-
-//     let _ = match io::copy_bidirectional(&mut remote, &mut local).await {
-//         Ok(_) => info!("proxy closed cleanly"),
-//         Err(e) => info!("proxy closed with error: {:?}", e),
-//     };
-
-//     Ok(())
-// }
 
 pub async fn connect_host(host: &str, port: u16) -> anyhow::Result<TcpStream> {
     for i in 0..10 {
