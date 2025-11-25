@@ -27,9 +27,8 @@ impl DockerProxy {
         // Start proxy in background
         let socket_clone = socket_path.clone();
         let device = device_name.to_string();
-        let proxy_handle = tokio::spawn(async move {
-            start_docker_proxy(&device, &socket_clone).await
-        });
+        let proxy_handle =
+            tokio::spawn(async move { start_docker_proxy(&device, &socket_clone).await });
 
         // Wait for socket to be ready (up to 2 seconds)
         Self::wait_for_socket(&socket_path).await?;
@@ -102,9 +101,8 @@ impl Drop for DockerProxy {
 /// Execute docker command on remote device
 pub async fn run_docker_command(device_name: &str, args: Vec<String>) -> Result<()> {
     // Install crypto provider for rustls
-    let _ = rustls::crypto::CryptoProvider::install_default(
-        rustls::crypto::ring::default_provider(),
-    );
+    let _ =
+        rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider());
 
     // Check if docker CLI exists
     check_docker_cli()?;
@@ -199,8 +197,10 @@ async fn handle_docker_connection(mut local: UnixStream, device_name: &str) -> R
 
     // Build WebSocket request with auth
     let mut req = url.into_client_request()?;
-    req.headers_mut()
-        .insert("Sec-WebSocket-Protocol", format!("bearer.{}", token).parse()?);
+    req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("bearer.{}", token).parse()?,
+    );
 
     // Connect to WebSocket
     let (ws_stream, _) = connect_async(req)
@@ -218,7 +218,7 @@ async fn handle_docker_connection(mut local: UnixStream, device_name: &str) -> R
                 Ok(0) => break,
                 Ok(n) => {
                     if ws_tx
-                        .send(tokio_tungstenite::tungstenite::Message::Binary(
+                        .send(tokio_tungstenite::tungstenite::Message::binary(
                             buf[..n].to_vec(),
                         ))
                         .await
@@ -279,8 +279,10 @@ async fn handle_docker_connection(mut local: NamedPipeServer, device_name: &str)
 
     // Build WebSocket request with auth
     let mut req = url.into_client_request()?;
-    req.headers_mut()
-        .insert("Sec-WebSocket-Protocol", format!("bearer.{}", token).parse()?);
+    req.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("bearer.{}", token).parse()?,
+    );
 
     // Connect to WebSocket
     let (ws_stream, _) = connect_async(req).await?;
@@ -295,7 +297,7 @@ async fn handle_docker_connection(mut local: NamedPipeServer, device_name: &str)
                 Ok(0) => break,
                 Ok(n) => {
                     if ws_tx
-                        .send(tokio_tungstenite::tungstenite::Message::Binary(
+                        .send(tokio_tungstenite::tungstenite::Message::binary(
                             buf[..n].to_vec(),
                         ))
                         .await

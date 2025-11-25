@@ -15,3 +15,4 @@ pub mod retry;
 pub mod system_info;
 
 pub mod tls;
+pub mod websocket;

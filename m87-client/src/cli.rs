@@ -9,6 +9,7 @@ use crate::devices;
 use crate::tui;
 use crate::update;
 use crate::util;
+use crate::util::logging::init_tracing_with_log_layer;
 
 /// Represents a parsed device path (either local or remote)
 struct DevicePath {
@@ -81,10 +82,6 @@ enum Commands {
     #[command(subcommand)]
     Devices(DevicesCommands),
 
-    /// Manage active port tunnels
-    #[command(subcommand)]
-    Tunnels(TunnelsCommands),
-
     /// Show CLI version information
     Version,
 
@@ -130,23 +127,9 @@ pub struct DeviceRoot {
 pub enum DeviceCommand {
     Shell,
     Tunnel {
-        port: u16,
-        #[arg(long)]
-        background: bool,
-        #[arg(long)]
-        persist: bool,
-        #[arg(long)]
-        name: String,
-        #[arg(long)]
-        ips: Option<String>,
-        #[arg(long)]
-        add_own_ip: bool,
-        #[arg(long)]
-        open: bool,
-        #[arg(long)]
-        local_port: Option<u16>,
+        remote_port: u16,
+        local_port: u16,
     },
-    Tunnels,
     Ls {
         path: Vec<String>,
     },
@@ -225,35 +208,7 @@ enum DevicesCommands {
     },
 }
 
-#[derive(Subcommand)]
-enum TunnelsCommands {
-    /// List all active tunnels
-    List,
-
-    /// Close an active tunnel
-    Close {
-        /// Tunnel ID to close
-        id: String,
-    },
-}
-
 pub async fn cli() -> anyhow::Result<()> {
-    // TODO: Fix device name collision issue
-    // Currently, if a device is named the same as a built-in command (e.g., "agent", "login", "devices"),
-    // the CLI will interpret it as the built-in command instead of a device name.
-    //
-    // Example of the problem:
-    //   m87 agent ssh  <- This triggers the agent subcommand, NOT ssh to device named "agent"
-    //
-    // Potential solutions:
-    // 1. Check if second arg matches known device commands (ssh, tunnel, sync, etc.) and treat as device command
-    // 2. Try parsing as device command first, fall back to built-in commands
-    // 3. Reserve certain names and validate during device registration
-    // 4. Use a prefix like @ or : for device names (changes API spec)
-    //
-    // Recommended: Solution 1 - disambiguate based on second argument pattern
-    // This preserves the API spec while allowing any device name.
-
     let cli = Cli::parse();
 
     match cli.command {
@@ -347,19 +302,6 @@ pub async fn cli() -> anyhow::Result<()> {
             }
         },
 
-        Commands::Tunnels(cmd) => match cmd {
-            TunnelsCommands::List => {
-                eprintln!("Error: 'tunnels list' command is not yet implemented");
-                eprintln!("Would list all active tunnels");
-                bail!("Not implemented");
-            }
-            TunnelsCommands::Close { id } => {
-                eprintln!("Error: 'tunnels close' command is not yet implemented");
-                eprintln!("Would close tunnel with ID: {}", id);
-                bail!("Not implemented");
-            }
-        },
-
         Commands::Version => {
             println!("Version: {}", env!("CARGO_PKG_VERSION"));
             println!("Build: {}", env!("GIT_COMMIT"));
@@ -398,7 +340,7 @@ pub async fn cli() -> anyhow::Result<()> {
 
         Commands::Device(args) => {
             let parsed = DeviceRoot::try_parse_from(
-                std::iter::once("m87-dev").chain(args.iter().map(|s| s.as_str())),
+                std::iter::once("m87").chain(args.iter().map(|s| s.as_str())),
             )?;
             handle_device_command(parsed).await?;
         }
@@ -493,47 +435,13 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         }
 
         DeviceCommand::Tunnel {
-            port,
-            background,
-            persist,
-            name,
-            ips,
-            add_own_ip,
-            open,
+            remote_port,
             local_port,
         } => {
-            // split by ,
-            let ips = ips.map(|f| f.split(",").map(|s| s.to_string()).collect::<Vec<String>>());
-            let _ = tunnel::create_tunnel(&device, port, ips, add_own_ip, open, &name).await?;
-            if let Some(localport) = local_port {
-                let _ = tunnel::open_local_tunnel(&device, &name, localport).await?;
-                if !persist {
-                    let _ = tunnel::delete_tunnel(&device, port).await?;
-                }
-            }
+            let _log_tx = init_tracing_with_log_layer("info");
+            let _ = tunnel::open_local_tunnel(&device, remote_port, local_port).await?;
             Ok(())
         }
-
-        DeviceCommand::Tunnels => {
-            let _ = tui::tunnels::show_forwards_tui(&device).await?;
-            Ok(())
-        }
-
-        // DeviceCommand::Tunnels {
-        //     cmd: DeviceTunnelsCommand::List,
-        // } => {
-        //     let tunnels = tunnel::list_tunnels(&device).await?;
-        //     println!("Tunnels on {}: {:#?}", device, tunnels);
-        //     Ok(())
-        // }
-
-        // DeviceCommand::Tunnels {
-        //     cmd: DeviceTunnelsCommand::Close { port },
-        // } => {
-        //     let tunnels = tunnel::delete_tunnel(&device, port).await?;
-        //     println!("Closed tunnel on {}: {}", device, port);
-        //     Ok(())
-        // }
         DeviceCommand::Ls { path } => {
             println!("Would run ls on {} with {:?}", device, path);
             bail!("Not implemented");
