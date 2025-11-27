@@ -80,4 +80,7 @@ russh-sftp = "2.1.1"
 # Signal handling and cancellation
 tokio-util = "0.7"
 
+# Time parsing for relative timestamps
+chrono = "0.4"
+
 [dev-dependencies]
