@@ -25,6 +25,7 @@ m87 <device> exec -it -- vim config.yaml
 |-------|------|----------|
 | (none) | Output only | Simple commands, scripts |
 | `-i` | Stdin forwarding | Respond to prompts (Y/n) |
+| `-t` | TTY read-only | Colored output, watch mode |
 | `-it` | Full TTY | TUI apps (vim, htop, less) |
 
 ## Examples
@@ -96,9 +97,12 @@ m87 rpi exec -- 'docker kill $(docker ps -q)'  # Correct: expands on remote
 | Mode | Ctrl+C Effect |
 |------|---------------|
 | No flags / `-i` | Terminates connection, exits with code 130 |
-| `-t` / `-it` | Sent to remote app (e.g., cancel in vim) |
+| `-t` | No effect (stdin not connected) |
+| `-it` | Sent to remote app (e.g., cancel in vim) |
 
-In TTY mode, Ctrl+C is forwarded to the remote application as a raw keystroke. To forcefully disconnect, close your terminal or use other means.
+In `-it` mode, Ctrl+C is forwarded to the remote application as a raw keystroke. To forcefully disconnect, close your terminal or use other means.
+
+**Note:** The `-t` flag without `-i` allocates a TTY for output formatting but does not connect stdin. This means keyboard input (including Ctrl+C) has no effect. Use `-t` alone for commands that need colored/formatted output but no interaction, or close your terminal to exit.
 
 ## Process Cleanup
 
