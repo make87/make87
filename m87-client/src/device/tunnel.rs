@@ -10,15 +10,10 @@ pub async fn open_local_tunnel(
     remote_port: u16,
     local_port: u16,
 ) -> Result<()> {
-    rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider())
-        .expect("failed to install ring crypto provider");
+
     let config = Config::load()?;
 
-    let dev = devices::list_devices()
-        .await?
-        .into_iter()
-        .find(|d| d.name == device_name)
-        .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?;
+    let dev = devices::get_device_by_name(device_name).await?;
 
     let token = AuthManager::get_cli_token().await?;
     let device_short_id = dev.short_id;
