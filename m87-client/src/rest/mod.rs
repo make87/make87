@@ -1,12 +1,11 @@
 mod auth;
-mod container_logs;
-mod container_terminal;
 mod docker;
 mod exec;
 mod logs;
 mod metrics;
 mod port;
 pub mod routes;
+mod serial;
 mod shared;
 mod ssh;
 mod terminal;

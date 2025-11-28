@@ -6,6 +6,7 @@ use m87_shared::device::PublicDevice;
 use crate::auth;
 use crate::config::Config;
 use crate::device;
+use crate::device::serial;
 use crate::device::tunnel;
 use crate::devices;
 use crate::tui;
@@ -184,6 +185,12 @@ pub enum DeviceCommand {
         tty: bool,
         #[arg(required = true, last = true)]
         command: Vec<String>,
+    },
+    Serial {
+        /// path to serial device (e.g., "/dev/ttyUSB0")
+        path: String,
+        // Optional baud rate (defaults to 115200)
+        baud: Option<u32>,
     },
 }
 
@@ -437,6 +444,12 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             command,
         } => {
             tui::exec::run_exec(&device, command, stdin, tty).await?;
+            Ok(())
+        }
+
+        DeviceCommand::Serial { path, baud } => {
+            let baud = baud.unwrap_or(115200);
+            serial::open_serial(&device, &path, baud).await?;
             Ok(())
         }
     }

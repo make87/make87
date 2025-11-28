@@ -81,6 +81,11 @@ filetime = "0.2"
 # Signal handling and cancellation
 tokio-util = "0.7"
 
+# serial forwarding
+tokio-serial = "5.4.1"
+# cli side pty creation
+libc = "=0.2.177"
+
 # Time parsing for relative timestamps
 chrono = "0.4"
 

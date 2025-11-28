@@ -3,6 +3,7 @@ use axum::{routing::any, Router};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
+use crate::rest::serial::handle_serial_io;
 use crate::rest::upgrade::io_upgrade;
 use crate::rest::{
     docker::handle_docker_io, exec::handle_exec_io, logs::handle_logs_io,
@@ -19,7 +20,7 @@ pub fn build_router() -> Router {
         .route("/ssh", any(io_upgrade(handle_ssh_io)))
         .route("/exec", any(io_upgrade(handle_exec_io)))
         .route("/port/{port}", any(io_upgrade(handle_port_forward_io)))
-
+        .route("/serial/{port}", any(io_upgrade(handle_serial_io)))
 }
 
 /// Start the Axum server (safe to call in a spawn loop)

@@ -12,4 +12,5 @@ pub mod docker;
 pub mod fs;
 pub mod tunnel;
 
+pub mod serial;
 pub mod ssh;
