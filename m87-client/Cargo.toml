@@ -76,6 +76,7 @@ futures-util = "0.3"
 # ssh
 russh = "0.54.6"
 russh-sftp = "2.1.1"
+filetime = "0.2"
 
 # Signal handling and cancellation
 tokio-util = "0.7"

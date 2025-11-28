@@ -111,6 +111,9 @@ pub fn make_server_config() -> Arc<ServerConfig> {
     config.server_id = russh::SshId::Standard("SSH-2.0-m87-ssh".to_string());
     config.inactivity_timeout = Some(Duration::from_secs(600));
     config.auth_rejection_time = Duration::from_millis(0);
+    config.window_size = 4 * 1024 * 1024; // OK > 1MB
+    config.channel_buffer_size = 4 * 1024 * 1024; // OK > 1MB
+    config.maximum_packet_size = 65535; // MUST stay <= 65535
 
     let host_key = russh::keys::PrivateKey::random(&mut OsRng, russh::keys::Algorithm::Ed25519)
         .expect("failed to generate SSH host key");

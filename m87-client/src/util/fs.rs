@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::{Duration, SystemTime},
 };
 
 use tokio::{
@@ -148,6 +149,12 @@ impl russh_sftp::server::Handler for M87SftpHandler {
         _attrs: FileAttributes,
     ) -> Result<Handle, Self::Error> {
         let path = self.resolve_path(&filename)?;
+        println!("PWD = {}", std::env::current_dir().unwrap().display());
+        println!(
+            "Is /home/phillip/test2 visible? {}",
+            Path::new("/home/phillip/test2").exists()
+        );
+
         let mut open_options = fs::OpenOptions::new();
 
         // Translate OpenFlags (v3 is a bit weird; this is “good enough”).
@@ -466,9 +473,13 @@ impl russh_sftp::server::Handler for M87SftpHandler {
         &mut self,
         id: u32,
         path: String,
-        _attrs: FileAttributes,
+        attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
-        let _ = self.resolve_path(&path)?;
+        let full = self.resolve_path(&path)?;
+        if let Err(e) = apply_mtime(&full, &attrs) {
+            tracing::error!("setstat mtime failed: {:?}", e);
+            return Ok(self.make_status_err(id, StatusCode::Failure, "setstat failed"));
+        }
         Ok(self.make_status_ok(id))
     }
 
@@ -476,14 +487,17 @@ impl russh_sftp::server::Handler for M87SftpHandler {
         &mut self,
         id: u32,
         handle: String,
-        _attrs: FileAttributes,
+        attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
         let map = self.open_files.lock().await;
-        if map.contains_key(&handle) {
-            Ok(self.make_status_ok(id))
-        } else {
-            Ok(self.make_status_err(id, StatusCode::NoSuchFile, "invalid handle"))
+        if let Some(of) = map.get(&handle) {
+            if let Err(e) = apply_mtime(&of.path, &attrs) {
+                tracing::error!("fsetstat mtime failed: {:?}", e);
+                return Ok(self.make_status_err(id, StatusCode::Failure, "fsetstat failed"));
+            }
+            return Ok(self.make_status_ok(id));
         }
+        Ok(self.make_status_err(id, StatusCode::NoSuchFile, "invalid handle"))
     }
 
     // -------------------------------------------------------------------------
@@ -506,5 +520,19 @@ where
 {
     let handler = M87SftpHandler::new(root);
     russh_sftp::server::run(stream, handler).await;
+    Ok(())
+}
+
+fn apply_mtime(path: &Path, attrs: &FileAttributes) -> std::io::Result<()> {
+    if let Some(mtime) = attrs.mtime {
+        let ts = SystemTime::UNIX_EPOCH + Duration::from_secs(mtime as u64);
+
+        let file = std::fs::File::options().write(true).open(path)?;
+
+        let times = std::fs::FileTimes::new().set_modified(ts).set_accessed(ts); // optional – keep accessed same as modified
+
+        file.set_times(times)?;
+    }
+
     Ok(())
 }

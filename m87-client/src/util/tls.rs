@@ -8,7 +8,7 @@ use rustls::{
 };
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use webpki_roots::TLS_SERVER_ROOTS;
 
 pub async fn connect_host(host: &str, port: u16) -> anyhow::Result<TcpStream> {
@@ -43,7 +43,7 @@ pub async fn get_tls_connection(
     root_store.roots.extend(TLS_SERVER_ROOTS.iter().cloned());
 
     // 3. TLS client config
-    info!(
+    debug!(
         "Creating TLS client config with trust_invalid_server_cert: {}",
         trust_invalid_server_cert
     );

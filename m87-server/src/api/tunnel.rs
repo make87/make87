@@ -244,7 +244,10 @@ pub async fn handle_control_tunnel(
     }
 
     let base = reader.into_inner();
-    let mut sess = Session::new_server(base, YamuxConfig::default());
+    let mut cfg = YamuxConfig::default();
+    cfg.max_stream_window_size = 8 * 1024 * 1024; // 8 MB
+
+    let mut sess = Session::new_client(base, cfg);
     let control = sess.control();
     relay
         .register_tunnel(device_id.clone(), control.clone())

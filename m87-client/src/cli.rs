@@ -369,7 +369,7 @@ pub async fn cli() -> anyhow::Result<()> {
         }
 
         Commands::Cp { source, dest } => {
-            // let _ = device::fs::copy(&source, &dest).await?;
+            let _ = device::fs::copy(&source, &dest).await?;
         }
 
         Commands::Sync {
@@ -386,8 +386,7 @@ pub async fn cli() -> anyhow::Result<()> {
         }
         Commands::Ls { path } => {
             let resp = device::fs::list(&path).await?;
-            println!("{:#?}", resp);
-            // tui::fs::print_fs_response(&resp);
+            tui::fs::print_dir_entries(&resp);
         }
 
         Commands::Device(args) => {
@@ -410,10 +409,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             Ok(())
         }
 
-        DeviceCommand::Tunnel {
-            target,
-            local_port,
-        } => {
+        DeviceCommand::Tunnel { target, local_port } => {
             let (host, remote_port) = parse_tunnel_target(&target)?;
             let local_port = local_port.unwrap_or(remote_port);
             tunnel::open_local_tunnel(&device, &host, remote_port, local_port).await?;
@@ -462,11 +458,7 @@ fn print_devices_table(devices: &[PublicDevice]) {
     for dev in devices {
         let status = if dev.online { "online" } else { "offline" };
         let os = truncate_str(&dev.system_info.operating_system, 30);
-        let ip = dev
-            .system_info
-            .public_ip_address
-            .as_deref()
-            .unwrap_or("-");
+        let ip = dev.system_info.public_ip_address.as_deref().unwrap_or("-");
         let last_seen = format_relative_time(&dev.last_connection);
 
         println!(

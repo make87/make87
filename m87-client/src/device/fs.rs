@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
+use filetime::{set_file_times, FileTime};
 use russh::keys::ssh_key;
-use tokio::io::AsyncReadExt;
+use russh_sftp::client::fs::{DirEntry, Metadata};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::sleep;
-use tokio_yamux::{Control, Session};
 use tracing::{error, info};
 
 use russh::client::{Config as ClientConfig, Handler};
@@ -16,6 +17,7 @@ use russh_sftp::client::SftpSession;
 
 use crate::devices;
 use crate::util::raw_connection::open_raw_io;
+use crate::util::shutdown::SHUTDOWN;
 use crate::{auth::AuthManager, config::Config};
 
 #[derive(Debug, Clone)]
@@ -61,7 +63,9 @@ pub async fn open_sftp_session(device_name: &str) -> anyhow::Result<SftpSession>
     let mut config = ClientConfig::default();
 
     config.inactivity_timeout = Some(std::time::Duration::from_secs(10));
-
+    config.window_size = 4 * 1024 * 1024; // OK > 1MB
+    config.channel_buffer_size = 4 * 1024 * 1024; // OK > 1MB
+    config.maximum_packet_size = 65535; // MUST stay <= 65535
     let config = Arc::new(config);
     let sh = DummyHandler {};
 
@@ -84,13 +88,13 @@ impl Handler for DummyHandler {
 
     fn check_server_key(
         &mut self,
-        server_public_key: &ssh_key::PublicKey,
+        _server_public_key: &ssh_key::PublicKey,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         async { Ok(true) }
     }
 }
 
-pub async fn list(path: &str) -> Result<Vec<String>> {
+pub async fn list(path: &str) -> Result<Vec<DirEntry>> {
     let path = LocalOrRemotePath::parse(path);
 
     let (device_name, remote_path) = match path {
@@ -101,9 +105,9 @@ pub async fn list(path: &str) -> Result<Vec<String>> {
     let sftp = open_sftp_session(&device_name).await?;
 
     let items = sftp.read_dir(&remote_path).await?;
-    let names = items.into_iter().map(|file| file.file_name()).collect();
+    let files = items.into_iter().map(|file| file).collect();
 
-    Ok(names)
+    Ok(files)
 }
 
 pub async fn copy(src: &str, dst: &str) -> Result<()> {
@@ -123,91 +127,75 @@ async fn copy_file(
     sftp_dst: &mut Option<SftpSession>,
 ) -> Result<()> {
     match (src, dst) {
-        // Local -> Remote
         (LocalOrRemotePath::Local(src), LocalOrRemotePath::Remote { path: dst, .. }) => {
             let mut local_file = tokio::fs::File::open(src)
                 .await
                 .with_context(|| format!("open local file {src:?}"))?;
-            let mut buf = Vec::new();
-            local_file
-                .read_to_end(&mut buf)
-                .await
-                .with_context(|| format!("read local file {src:?}"))?;
 
-            let sftp = sftp_dst
-                .as_ref()
-                .context("missing SFTP dst session for remote copy")?;
+            let meta = local_file.metadata().await?;
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
 
-            // Ensure parent dir exists
+            let sftp = sftp_dst.as_ref().unwrap();
             if let Some(parent) = Path::new(dst).parent().and_then(|p| p.to_str()) {
-                sftp.create_dir(parent).await.ok(); // ignore error if it already exists
+                sftp.create_dir(parent).await.ok();
             }
 
-            sftp.write(dst.clone(), &buf)
-                .await
-                .with_context(|| format!("write remote file {dst}"))?;
+            let mut remote_file = sftp.create(dst.clone()).await?;
+
+            copy_chunked(&mut local_file, &mut remote_file).await?;
+            sync_remote_mtime(sftp, dst, mtime).await;
         }
 
-        // Remote -> Local
         (LocalOrRemotePath::Remote { path: src, .. }, LocalOrRemotePath::Local(dst)) => {
-            let src_sftp = sftp_src
-                .as_ref()
-                .context("missing SFTP src session for remote copy")?;
-
-            let data = src_sftp
-                .read(src.clone())
-                .await
-                .with_context(|| format!("read remote file {src}"))?;
-
-            let dst_sftp = sftp_dst
-                .as_ref()
-                .context("missing SFTP dst session for remote copy")?;
+            let sftp = sftp_src.as_ref().unwrap();
+            let remote_meta = sftp.metadata(src.clone()).await?;
+            let mut remote_file = sftp.open(src.clone()).await?;
 
             if let Some(parent) = dst.parent() {
-                dst_sftp.create_dir(parent.to_str().unwrap()).await.ok();
+                tokio::fs::create_dir_all(parent).await.ok();
             }
 
-            dst_sftp
-                .write(dst.to_str().unwrap(), &data)
+            let mut local_file = tokio::fs::File::create(dst)
                 .await
-                .with_context(|| format!("write local file {dst:?}"))?;
+                .with_context(|| format!("create local file {dst:?}"))?;
+
+            copy_chunked(&mut remote_file, &mut local_file).await?;
+            sync_local_mtime(dst, &remote_meta).await;
         }
 
-        // Remote -> Remote: download then upload (inefficient but simple for now).
         (
             LocalOrRemotePath::Remote { path: src, .. },
             LocalOrRemotePath::Remote { path: dst, .. },
         ) => {
-            let sftp_from = sftp_src
-                .as_ref()
-                .context("missing SFTP src session for remote->remote copy")?;
-            let sftp_to = sftp_dst
-                .as_ref()
-                .context("missing SFTP dst session for remote->remote copy")?;
+            let from = sftp_src.as_ref().unwrap();
+            let to = sftp_dst.as_ref().unwrap();
 
-            let data = sftp_from
-                .read(src.clone())
-                .await
-                .with_context(|| format!("read remote file {src}"))?;
+            let remote_meta = from.metadata(src.clone()).await?;
+            let mtime = remote_meta.mtime.unwrap_or(0) as u64;
 
+            let mut from_file = from.open(src.clone()).await?;
             if let Some(parent) = Path::new(dst).parent().and_then(|p| p.to_str()) {
-                sftp_to.create_dir(parent).await.ok();
+                to.create_dir(parent).await.ok();
             }
 
-            sftp_to
-                .write(dst.clone(), &data)
-                .await
-                .with_context(|| format!("write remote file {dst}"))?;
+            let mut to_file = to.create(dst.clone()).await?;
+            copy_chunked(&mut from_file, &mut to_file).await?;
+            sync_remote_mtime(to, dst, mtime).await;
         }
 
-        // Local -> Local
         (LocalOrRemotePath::Local(src), LocalOrRemotePath::Local(dst)) => {
             if let Some(parent) = dst.parent() {
                 tokio::fs::create_dir_all(parent).await.ok();
             }
-            tokio::fs::copy(src, dst)
-                .await
-                .with_context(|| format!("copy local {src:?} -> {dst:?}"))?;
+
+            let mut src_file = tokio::fs::File::open(src).await?;
+            let mut dst_file = tokio::fs::File::create(dst).await?;
+            copy_chunked(&mut src_file, &mut dst_file).await?;
         }
     }
 
@@ -443,10 +431,53 @@ pub async fn watch_sync(src: &str, dst: &str, delete: bool) -> Result<()> {
                 }
             }
 
-            _ = tokio::signal::ctrl_c() => {
-                info!("CTRL-C received — stopping watch-sync");
+            _ = SHUTDOWN.cancelled() => {
+                info!("Shutdown requested — closing SSH tunnel");
                 return Ok(());
             }
         }
     }
+}
+
+async fn sync_remote_mtime(sftp: &SftpSession, remote_path: &str, src_mtime: u64) {
+    let mut attrs = Metadata::default();
+    attrs.mtime = Some(src_mtime as u32);
+    let _ = sftp.set_metadata(remote_path.to_string(), attrs).await;
+}
+
+// Helper: sync local mtime to match remote metadata
+async fn sync_local_mtime(local_path: &Path, remote_meta: &Metadata) {
+    if let Some(mtime) = remote_meta.mtime {
+        let ft = FileTime::from_unix_time(mtime as i64, 0);
+        let p = local_path.to_owned();
+
+        let _ = tokio::task::spawn_blocking(move || set_file_times(&p, FileTime::now(), ft)).await;
+    }
+}
+
+async fn copy_chunked<R, W>(mut reader: R, mut writer: W) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 1024 * 1024]; // 1 MB chunks
+    loop {
+        tokio::select! {
+            _ = SHUTDOWN.cancelled() => {
+                return Err(anyhow::anyhow!("aborted"));
+            }
+
+            n = reader.read(&mut buf) => {
+                let n = n?;
+                if n == 0 {
+                    break;
+                }
+
+                writer.write_all(&buf[..n]).await?;
+            }
+        }
+    }
+
+    writer.flush().await?;
+    Ok(())
 }

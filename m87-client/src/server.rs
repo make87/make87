@@ -322,7 +322,9 @@ pub async fn connect_control_tunnel() -> anyhow::Result<()> {
     tls.flush().await?;
 
     // create client session
-    let mut sess = Session::new_client(tls, YamuxConfig::default());
+    let mut cfg = YamuxConfig::default();
+    cfg.max_stream_window_size = 8 * 1024 * 1024; // 8 MB
+    let mut sess = Session::new_client(tls, cfg);
     info!("control session created");
     // continuously poll session to handle keep-alives, frame exchange
     while let Some(Ok(mut yamux_stream)) = sess.next().await {
