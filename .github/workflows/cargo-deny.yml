@@ -18,28 +18,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust (toolchain from rust-toolchain.toml if present)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          command: check licenses advisories bans
 
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
-
-      - name: Check licenses
-        run: cargo deny check licenses
-
-      - name: Check advisories
-        run: cargo deny check advisories
-
-      - name: Check bans
-        run: cargo deny check bans
 
