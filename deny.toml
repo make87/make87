@@ -67,14 +67,6 @@ feature-depth = 1
 #db-path = "$CARGO_HOME/advisory-dbs"
 # The url(s) of the advisory databases to use
 #db-urls = ["https://github.com/rustsec/advisory-db"]
-# A list of advisory IDs to ignore. Note that ignored advisories will still
-# output a note when they are encountered.
-ignore = [
-    #"RUSTSEC-0000-0000",
-    #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
-    #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
-    #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
-]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
 # Setting this to true can be helpful if you have special authentication requirements that cargo-deny does not support.
@@ -84,6 +76,21 @@ ignore = [
 # This section is considered when running `cargo deny check licenses`
 # More documentation for the licenses section can be found here:
 # https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html
+
+[[advisories.ignore]]
+id = "RUSTSEC-2025-0119" # number_prefix unmaintained
+reason = "Transitively pulled in via indicatif/self_update; only used for human-facing progress formatting, no security impact. Tracked upstream; will switch if/when dependency updates."
+
+[[advisories.ignore]]
+id = "RUSTSEC-2024-0436" # paste unmaintained
+reason = "Transitively pulled in via ratatui; no security impact, just macros. Will adopt upstream fix once ratatui moves away from paste."
+
+# Only add this IF you have a clear mitigation story:
+[[advisories.ignore]]
+id = "RUSTSEC-2023-0071" # rsa Marvin Attack
+reason = "rsa is present transitively via russh/openidconnect but we do not use RSA private keys: only ED25519/ECDSA SSH keys and public-key verification for OpenID Connect. No private RSA operations in our process."
+
+
 [licenses]
 # List of explicitly allowed licenses
 # See https://spdx.org/licenses/ for list of possible licenses
