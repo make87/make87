@@ -63,7 +63,7 @@ pub async fn get_server_url_and_owner_reference(
     // 2. Print browser login URL for the user
     // ------------------------------------------------------------
 
-    let browser_url = format!("{}/app/devices/login/{}", make87_app_url, id);
+    let browser_url = format!("{}/devices/login/{}", make87_app_url, id);
     eprintln!("No server configured.");
     eprintln!("Open this link in your browser to log in:");
     eprintln!("{}", browser_url);
