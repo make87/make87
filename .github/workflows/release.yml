@@ -113,6 +113,52 @@ jobs:
           path: dist/${{ steps.binary-info.outputs.binary_name }}-${{ matrix.target }}
           if-no-files-found: error
 
+  # NEW JOB: generate per-crate THIRDPARTY_LICENSES.html
+  attribution:
+    name: Generate attribution files
+    needs: read-version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked
+
+      - name: Generate THIRDPARTY_LICENSES for m87-client
+        run: |
+          cargo about generate \
+            -c attribution/about.toml \
+            --manifest-path m87-client/Cargo.toml \
+            attribution/about.hbs \
+            > m87-client/THIRDPARTY_LICENSES.html
+          ls -lh m87-client/THIRDPARTY_LICENSES.html
+
+      - name: Generate THIRDPARTY_LICENSES for m87-server
+        run: |
+          cargo about generate \
+            -c attribution/about.toml \
+            --manifest-path m87-server/Cargo.toml \
+            attribution/about.hbs \
+            > m87-server/THIRDPARTY_LICENSES.html
+          ls -lh m87-server/THIRDPARTY_LICENSES.html
+
+      - name: Upload attribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: attribution
+          path: |
+            m87-client/THIRDPARTY_LICENSES.html
+            m87-server/THIRDPARTY_LICENSES.html
+          if-no-files-found: error
+
   docker-build:
     name: Build Docker Image - ${{ matrix.arch }}
     needs: [read-version]
@@ -160,7 +206,7 @@ jobs:
 
   release:
     name: Release - ${{ needs.read-version.outputs.version }}
-    needs: [read-version, build, docker-build]
+    needs: [read-version, build, docker-build, attribution]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -174,6 +220,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release-assets
+          # This will copy binaries, install script (later), AND both THIRDPARTY_LICENSES.html files
           find artifacts -type f -exec cp {} release-assets/ \;
           ls -lh release-assets/
 
@@ -241,7 +288,7 @@ jobs:
           name: Release v${{ needs.read-version.outputs.version }}
           draft: false
           prerelease: ${{ contains(needs.read-version.outputs.version, '-') }}
-          make-latest: ${{ steps.version-compare.outputs.is_highest == 'true' }}
+          make_latest: ${{ steps.version-compare.outputs.is_highest == 'true' }}
           files: release-assets/*
           generate_release_notes: true
           body: |
