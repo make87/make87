@@ -1,0 +1,26 @@
+name: Rust dependency & license checks
+
+on:
+  push:
+    branches:
+      - main
+      - "release/*"
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (licenses, bans, advisories)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories bans
+
+

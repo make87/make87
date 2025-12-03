@@ -24,7 +24,12 @@ pub async fn handle_docker_io(_: (), mut io: BoxedIo) {
             info!("copy_bidirectional finished: io→docker={a} bytes, docker→io={b} bytes");
         }
         Err(e) => {
-            error!("I/O proxy error: {e}");
+            let msg = e.to_string();
+            if msg.contains("Connection reset") || msg.contains("closing handshake") {
+                info!("I/O proxy closed: {e}");
+            } else {
+                error!("I/O proxy error: {e}");
+            }
         }
     }
 
