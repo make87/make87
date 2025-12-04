@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 #[cfg(feature = "agent")]
 use m87_shared::device::DeviceSystemInfo;
 use std::fs::{self, File, OpenOptions};
@@ -264,31 +264,46 @@ pub async fn register_device(
     }
 
     let mut config = Config::load()?;
-    let owner_scope = match owner_scope {
-        Some(rid) => rid,
-        None => match Config::has_owner_reference()? {
-            true => Config::get_owner_reference()?,
-            false => match std::env::var(OWNER_REFERENCE_ENV_VAR) {
-                Ok(value) => value,
-                Err(_) => {
-                    if config.api_url.is_none() {
-                        info!("Missing server url and owner reference. Starting registration process...");
-                        let (url, owner) = server::get_server_url_and_owner_reference(
-                            &config.make87_api_url,
-                            &config.make87_app_url,
-                        )
-                        .await?;
-                        config.api_url = Some(url);
-                        config.owner_reference = Some(owner.clone());
-                        config.save()?;
-                        owner
-                    } else {
-                        return Err(anyhow::anyhow!("No owner reference provided"));
-                    }
-                }
-            },
-        },
-    };
+
+    // resolve CLI owner, config owner, or env owner
+    let mut owner_scope = owner_scope
+        .or_else(|| {
+            Config::has_owner_reference()
+                .ok()
+                .and_then(|b| b.then(Config::get_owner_reference).transpose().ok())
+                .flatten()
+        })
+        .or_else(|| std::env::var(OWNER_REFERENCE_ENV_VAR).ok());
+
+    let mut api_url = config.api_url.clone();
+
+    // ------------------------------------------------------------
+    // If either value is missing → call registration
+    // ------------------------------------------------------------
+    if api_url.is_none() || owner_scope.is_none() {
+        let (resolved_api, resolved_owner) = server::get_server_url_and_owner_reference(
+            &config.make87_api_url,
+            &config.make87_app_url,
+            owner_scope.clone(),
+            api_url.clone(),
+        )
+        .await?;
+
+        api_url = Some(resolved_api.clone());
+        owner_scope = Some(resolved_owner.clone());
+
+        config.api_url = Some(resolved_api);
+        config.owner_reference = Some(resolved_owner);
+        config.save()?;
+    }
+
+    // ------------------------------------------------------------
+    // Final validation
+    // ------------------------------------------------------------
+    let api_url = api_url.expect("API URL must be set after registration");
+    let owner_scope = owner_scope
+        .ok_or_else(|| anyhow::anyhow!("No owner reference provided after registration"))?;
+
     //if @ is in owner_scope prefix with user: otherwise with org:
     let owner_scope = if owner_scope.contains('@') {
         format!("user:{}", owner_scope)
@@ -296,7 +311,7 @@ pub async fn register_device(
         format!("org:{}", owner_scope)
     };
     let mut report_handler = device::DeviceAuthRequestHandler {
-        api_url: config.get_server_url(),
+        api_url,
         device_info: device_system_info,
         device_id: config.device_id,
         owner_scope,

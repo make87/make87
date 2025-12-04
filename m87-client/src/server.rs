@@ -1,6 +1,6 @@
 #[cfg(feature = "agent")]
 use anyhow::Context;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 #[cfg(feature = "agent")]
 use futures::StreamExt;
 #[cfg(feature = "agent")]
@@ -38,7 +38,16 @@ pub use m87_shared::heartbeat::{Digests, HeartbeatRequest, HeartbeatResponse};
 pub async fn get_server_url_and_owner_reference(
     make87_api_url: &str,
     make87_app_url: &str,
+    owner_reference: Option<String>,
+    server_url: Option<String>,
 ) -> Result<(String, String)> {
+    // if owner ref and server url are some return them right away
+    if let Some(owner_ref) = &owner_reference {
+        if let Some(server) = &server_url {
+            return Ok((server.clone(), owner_ref.clone()));
+        }
+    }
+
     let client = reqwest::Client::new();
 
     // ------------------------------------------------------------
@@ -47,11 +56,17 @@ pub async fn get_server_url_and_owner_reference(
     let post_url = format!("{}/v1/device/login", make87_api_url);
 
     #[derive(serde::Serialize)]
-    struct EmptyBody {}
+    struct EmptyBody {
+        owner_reference: Option<String>,
+        server_url: Option<String>,
+    }
 
     let id: String = client
         .post(&post_url)
-        .json(&EmptyBody {})
+        .json(&EmptyBody {
+            owner_reference: owner_reference.clone(),
+            server_url,
+        })
         .send()
         .await?
         .error_for_status()
@@ -66,11 +81,14 @@ pub async fn get_server_url_and_owner_reference(
     // 2. Print browser login URL for the user
     // ------------------------------------------------------------
 
-    let browser_url = format!("{}/devices/login/{}", make87_app_url, id);
-    eprintln!("No server configured.");
-    eprintln!("Open this link in your browser to log in:");
-    eprintln!("{}", browser_url);
-    eprintln!("Waiting for authentication...");
+    if owner_reference.is_none() {
+        // we only need the user to interact if we are missing a assigned owner. If we know the owner server can be aut oassigned
+        let browser_url = format!("{}/devices/login/{}", make87_app_url, id);
+        eprintln!("No server configured.");
+        eprintln!("Open this link in your browser to log in:");
+        eprintln!("{}", browser_url);
+        eprintln!("Waiting for authentication...");
+    }
 
     // ------------------------------------------------------------
     // 3. Poll GET /login/{id} until url != None
@@ -437,7 +455,9 @@ pub async fn tunnel_device_port(
     let path = format!("/port/{remote_port}?host={remote_host}");
 
     let listener = TcpListener::bind(("127.0.0.1", local_port)).await?;
-    info!("Listening on 127.0.0.1:{local_port} and forwarding to {device_short_id} -> {remote_host}:{remote_port}");
+    info!(
+        "Listening on 127.0.0.1:{local_port} and forwarding to {device_short_id} -> {remote_host}:{remote_port}"
+    );
 
     loop {
         tokio::select! {
