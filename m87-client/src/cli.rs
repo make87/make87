@@ -4,8 +4,6 @@ use clap::{Parser, Subcommand};
 use m87_shared::device::PublicDevice;
 
 use crate::auth;
-#[cfg(feature = "agent")]
-use crate::config::Config;
 use crate::device;
 use crate::device::serial;
 use crate::device::tunnel;
@@ -43,23 +41,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Authenticate with make87 (defaults to manager login)
-    Login {
-        /// Configure device as agent for remote management (Linux only, headless flow)
-        #[cfg(feature = "agent")]
-        #[arg(long)]
-        agent: bool,
-
-        /// Organization ID to register agent under (only with --agent)
-        #[cfg(feature = "agent")]
-        #[arg(long = "org-id", conflicts_with = "email")]
-        org_id: Option<String>,
-
-        /// Email address to register agent under (only with --agent)
-        #[cfg(feature = "agent")]
-        #[arg(long, conflicts_with = "org_id")]
-        email: Option<String>,
-    },
+    /// Authenticate with make87 (manager login via browser)
+    Login,
 
     /// Logout and deauthenticate this device
     Logout,
@@ -168,6 +151,17 @@ pub enum DeviceCommand {
 #[cfg(feature = "agent")]
 #[derive(Subcommand)]
 enum AgentCommands {
+    /// Register this device as an agent (headless flow, requires approval)
+    Login {
+        /// Organization ID to register agent under
+        #[arg(long = "org-id", conflicts_with = "email")]
+        org_id: Option<String>,
+
+        /// Email address to register agent under
+        #[arg(long, conflicts_with = "org_id")]
+        email: Option<String>,
+    },
+
     /// Run the agent daemon (blocking, used by systemd service)
     Run,
 
@@ -228,38 +222,10 @@ pub async fn cli() -> anyhow::Result<()> {
     set_tls_provider();
 
     match cli.command {
-        Commands::Login {
-            #[cfg(feature = "agent")]
-            agent,
-            #[cfg(feature = "agent")]
-            org_id,
-            #[cfg(feature = "agent")]
-            email,
-        } => {
-            #[cfg(feature = "agent")]
-            if agent {
-                // Determine owner_scope from provided flags
-                let owner_scope = org_id.or(email);
-
-                // Agent registration flow (headless, requires approval)
-                println!("Registering device as agent...");
-                let sysinfo = util::system_info::get_system_info().await?;
-                auth::register_device(owner_scope, sysinfo).await?;
-                println!("Device registered as agent successfully");
-            } else {
-                // Default: Manager login flow (OAuth)
-                println!("Logging in as manager...");
-                auth::login_cli().await?;
-                println!("Logged in as manager successfully");
-            }
-
-            #[cfg(not(feature = "agent"))]
-            {
-                // Manager-only builds: always do manager login
-                println!("Logging in as manager...");
-                auth::login_cli().await?;
-                println!("Logged in as manager successfully");
-            }
+        Commands::Login => {
+            println!("Logging in as manager...");
+            auth::login_cli().await?;
+            println!("Logged in as manager successfully");
         }
 
         Commands::Logout => {
@@ -272,6 +238,13 @@ pub async fn cli() -> anyhow::Result<()> {
 
         #[cfg(feature = "agent")]
         Commands::Agent(cmd) => match cmd {
+            AgentCommands::Login { org_id, email } => {
+                let owner_scope = org_id.or(email);
+                println!("Registering device as agent...");
+                let sysinfo = util::system_info::get_system_info().await?;
+                auth::register_device(owner_scope, sysinfo).await?;
+                println!("Device registered as agent successfully");
+            }
             AgentCommands::Run => {
                 device::agent::run().await?;
             }
