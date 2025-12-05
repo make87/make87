@@ -99,14 +99,6 @@ impl TunnelSpec {
                         protocol: Protocols::Tcp,
                         addition: addition.clone(),
                     });
-
-                    specs.push(TunnelSpec {
-                        remote_host,
-                        remote_port,
-                        local_port,
-                        protocol: Protocols::Udp,
-                        addition: addition.clone(),
-                    });
                 }
             }
         }
