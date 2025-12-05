@@ -23,6 +23,7 @@ services:
       - nexus-network
     ports:
       - "443:8084"
+      - "443:8084/udp"
     volumes:
       - backend-data:/data/m87/certs
 
