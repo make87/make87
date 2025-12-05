@@ -37,10 +37,10 @@ pub struct TunnelSpec {
 // "8080:1337/udp"
 // "192.168.1.2:8080:1337/udp+mcast"
 impl TunnelSpec {
-    fn from_str(s: &str) -> Result<Vec<Self>> {
+    fn from_list(tunnel_specs: Vec<String>) -> Result<Vec<Self>> {
         let mut specs = Vec::new();
 
-        for token in s.split_whitespace() {
+        for token in tunnel_specs {
             // split protocol tail
             let mut parts = token.split('/');
             let ports = parts.next().unwrap();
@@ -115,14 +115,14 @@ impl TunnelSpec {
     }
 }
 
-pub async fn open_local_tunnel(device_name: &str, tunnel_specs: &str) -> Result<()> {
+pub async fn open_local_tunnel(device_name: &str, tunnel_specs: Vec<String>) -> Result<()> {
     let config = Config::load()?;
     let dev = devices::get_device_by_name(device_name).await?;
     let token = AuthManager::get_cli_token().await?;
     let device_short_id = dev.short_id;
     let trust = config.trust_invalid_server_cert;
 
-    let tunnels: Vec<TunnelSpec> = TunnelSpec::from_str(tunnel_specs)?;
+    let tunnels: Vec<TunnelSpec> = TunnelSpec::from_list(tunnel_specs)?;
 
     // spawn each tunnel as a background task
     for t in tunnels {

@@ -134,7 +134,7 @@ pub enum DeviceCommand {
     /// Forward remote port(s) to localhost
     Tunnel {
         /// Remote target as [ip:]port[/proto] (e.g., "8080" or "192.168.1.50:554" or "192.168.1.50:554/tcp" or "192.168.1.50:554/udp" or "192.168.1.50:554/udp+mcast")
-        targets: String,
+        targets: Vec<String>,
     },
     /// Run docker commands on the device
     Docker {
@@ -392,7 +392,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         }
 
         DeviceCommand::Tunnel { targets } => {
-            tunnel::open_local_tunnel(&device, &targets).await?;
+            tunnel::open_local_tunnel(&device, targets).await?;
             Ok(())
         }
 
