@@ -4,8 +4,7 @@ use clap::{Parser, Subcommand};
 use m87_shared::device::PublicDevice;
 
 use crate::auth;
-#[cfg(feature = "agent")]
-use crate::config::Config;
+
 use crate::device;
 use crate::device::serial;
 use crate::device::tunnel;
@@ -16,22 +15,6 @@ use crate::update;
 use crate::util;
 use crate::util::logging::init_logging;
 use crate::util::tls::set_tls_provider;
-
-/// Parse tunnel target: "[ip:]port" -> (host, port)
-/// Examples: "8080" -> ("127.0.0.1", 8080), "192.168.1.50:554" -> ("192.168.1.50", 554)
-fn parse_tunnel_target(target: &str) -> anyhow::Result<(String, u16)> {
-    if let Some((ip, port_str)) = target.rsplit_once(':') {
-        let port = port_str
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid port: {}", port_str))?;
-        Ok((ip.to_string(), port))
-    } else {
-        let port = target
-            .parse()
-            .map_err(|_| anyhow::anyhow!("Invalid port: {}", target))?;
-        Ok(("127.0.0.1".to_string(), port))
-    }
-}
 
 #[derive(Parser)]
 #[command(name = "m87")]
@@ -130,10 +113,8 @@ pub struct DeviceRoot {
 pub enum DeviceCommand {
     Shell,
     Tunnel {
-        /// Remote target as [ip:]port (e.g., "8080" or "192.168.1.50:554")
-        target: String,
-        /// Local port to listen on (defaults to remote port)
-        local_port: Option<u16>,
+        /// Remote target as [ip:]port[/proto] (e.g., "8080" or "192.168.1.50:554" or "192.168.1.50:554/tcp" or "192.168.1.50:554/udp" or "192.168.1.50:554/udp+mcast")
+        targets: String,
     },
 
     Docker {
@@ -386,10 +367,8 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             Ok(())
         }
 
-        DeviceCommand::Tunnel { target, local_port } => {
-            let (host, remote_port) = parse_tunnel_target(&target)?;
-            let local_port = local_port.unwrap_or(remote_port);
-            tunnel::open_local_tunnel(&device, &host, remote_port, local_port).await?;
+        DeviceCommand::Tunnel { targets } => {
+            tunnel::open_local_tunnel(&device, &targets).await?;
             Ok(())
         }
 
