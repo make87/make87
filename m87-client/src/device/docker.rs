@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Context, Result};
-use futures::{SinkExt, StreamExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::copy_bidirectional;
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{connect_async, tungstenite::client::IntoClientRequest};
+
+use crate::streams::quic::open_quic_io;
+use crate::streams::stream_type::StreamType;
 
 use crate::util::subprocess::SubprocessBuilder;
 
@@ -164,9 +165,9 @@ async fn start_docker_proxy(device_name: &str, socket_path: &Path) -> Result<()>
     }
 }
 
-/// Handle single Docker API connection via WebSocket
+/// Handle single Docker API connection via QUIC tunnel
 #[cfg(unix)]
-async fn handle_docker_connection(local: UnixStream, device_name: &str) -> Result<()> {
+async fn handle_docker_connection(mut local: UnixStream, device_name: &str) -> Result<()> {
     use crate::auth::AuthManager;
     use crate::config::Config;
     use crate::devices;
@@ -179,71 +180,24 @@ async fn handle_docker_connection(local: UnixStream, device_name: &str) -> Resul
         .find(|d| d.name == device_name)
         .ok_or_else(|| anyhow!("Device '{}' not found", device_name))?;
 
-    // Get config and build WebSocket URL
+    // Get config and auth token
     let config = Config::load().context("Failed to load config")?;
     let base = config.get_server_hostname();
-    let url = format!("wss://{}.{}/docker", dev.short_id, base);
-
-    // Get auth token
     let token = AuthManager::get_cli_token().await?;
 
-    // Build WebSocket request with auth
-    let mut req = url.into_client_request()?;
-    req.headers_mut().insert(
-        "Sec-WebSocket-Protocol",
-        format!("bearer.{}", token).parse()?,
-    );
+    // Connect via QUIC
+    let stream_type = StreamType::Docker { token };
+    let (_, mut io) = open_quic_io(
+        &base,
+        &dev.short_id,
+        stream_type,
+        config.trust_invalid_server_cert,
+    )
+    .await
+    .context("Failed to connect to Docker stream")?;
 
-    // Connect to WebSocket
-    let (ws_stream, _) = connect_async(req)
-        .await
-        .context("Failed to connect to WebSocket")?;
-
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    let (mut local_read, mut local_write) = local.into_split();
-
-    // Task 1: Local socket → WebSocket
-    let local_to_ws = async {
-        let mut buf = vec![0u8; 8192];
-        loop {
-            match local_read.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    if ws_tx
-                        .send(tokio_tungstenite::tungstenite::Message::binary(
-                            buf[..n].to_vec(),
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    };
-
-    // Task 2: WebSocket → Local socket
-    let ws_to_local = async {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            match msg {
-                tokio_tungstenite::tungstenite::Message::Binary(data) => {
-                    if local_write.write_all(&data).await.is_err() {
-                        break;
-                    }
-                }
-                tokio_tungstenite::tungstenite::Message::Close(_) => break,
-                _ => {}
-            }
-        }
-    };
-
-    // Run both tasks concurrently
-    tokio::select! {
-        _ = local_to_ws => {}
-        _ = ws_to_local => {}
-    }
+    // Bidirectional copy: local socket <-> QUIC stream
+    copy_bidirectional(&mut local, &mut io).await?;
 
     Ok(())
 }
@@ -261,67 +215,24 @@ async fn handle_docker_connection(mut local: NamedPipeServer, device_name: &str)
         .find(|d| d.name == device_name)
         .ok_or_else(|| anyhow!("Device '{}' not found", device_name))?;
 
-    // Get config and build WebSocket URL
+    // Get config and auth token
     let config = Config::load()?;
     let base = config.get_server_hostname();
-    let url = format!("wss://{}.{}/docker", dev.short_id, base);
-
-    // Get auth token
     let token = AuthManager::get_cli_token().await?;
 
-    // Build WebSocket request with auth
-    let mut req = url.into_client_request()?;
-    req.headers_mut().insert(
-        "Sec-WebSocket-Protocol",
-        format!("bearer.{}", token).parse()?,
-    );
+    // Connect via QUIC
+    let stream_type = StreamType::Docker { token };
+    let (_, mut io) = open_quic_io(
+        &base,
+        &dev.short_id,
+        stream_type,
+        config.trust_invalid_server_cert,
+    )
+    .await
+    .context("Failed to connect to Docker stream")?;
 
-    // Connect to WebSocket
-    let (ws_stream, _) = connect_async(req).await?;
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
-    let (mut local_read, mut local_write) = tokio::io::split(local);
-
-    // Task 1: Local pipe → WebSocket
-    let local_to_ws = async {
-        let mut buf = vec![0u8; 8192];
-        loop {
-            match local_read.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
-                    if ws_tx
-                        .send(tokio_tungstenite::tungstenite::Message::binary(
-                            buf[..n].to_vec(),
-                        ))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    };
-
-    // Task 2: WebSocket → Local pipe
-    let ws_to_local = async {
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            match msg {
-                tokio_tungstenite::tungstenite::Message::Binary(data) => {
-                    if local_write.write_all(&data).await.is_err() {
-                        break;
-                    }
-                }
-                tokio_tungstenite::tungstenite::Message::Close(_) => break,
-                _ => {}
-            }
-        }
-    };
-
-    tokio::select! {
-        _ = local_to_ws => {}
-        _ = ws_to_local => {}
-    }
+    // Bidirectional copy: local pipe <-> QUIC stream
+    copy_bidirectional(&mut local, &mut io).await?;
 
     Ok(())
 }
