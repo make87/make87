@@ -68,7 +68,13 @@ fn split_pem_blocks(input: &[u8]) -> ServerResult<Vec<(String, Vec<u8>)>> {
         let body_text = &text[body_start..body_end];
 
         // Decode using RFC7468 strict decoder
-        let (_, der) = pem_rfc7468::decode_vec(body_text.as_bytes())
+        let cleaned = body_text
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<String>();
+
+        let (_, der) = pem_rfc7468::decode_vec(cleaned.as_bytes())
             .map_err(|e| ServerError::internal_error(&format!("pem decode: {e}")))?;
 
         blocks.push((label, der));
