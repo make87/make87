@@ -2455,6 +2455,7 @@ dependencies = [
  "jsonwebtoken",
  "m87-shared",
  "mongodb",
+ "pem",
  "pem-rfc7468 1.0.0",
  "quinn",
  "quinn-proto",

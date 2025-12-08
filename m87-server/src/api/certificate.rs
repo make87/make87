@@ -1,4 +1,5 @@
 use axum::{Extension, Json, extract::State};
+use pem::parse_many;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs1KeyDer, PrivatePkcs8KeyDer};
 use rustls::{
     ServerConfig as RustlsServerConfig, crypto::ring::default_provider, pki_types::CertificateDer,
@@ -20,67 +21,16 @@ use crate::{
 };
 
 fn split_pem_blocks(input: &[u8]) -> ServerResult<Vec<(String, Vec<u8>)>> {
-    let text = std::str::from_utf8(input)
-        .map_err(|_| ServerError::internal_error("invalid UTF-8 in PEM"))?;
+    let text =
+        std::str::from_utf8(input).map_err(|_| ServerError::internal_error("invalid UTF-8"))?;
 
-    let mut blocks = Vec::new();
-    let mut pos = 0;
+    let pems =
+        parse_many(text).map_err(|e| ServerError::internal_error(&format!("PEM parse: {e}")))?;
 
-    loop {
-        // Find the next BEGIN
-        let begin = match text[pos..].find("-----BEGIN ") {
-            Some(i) => pos + i,
-            None => break,
-        };
-
-        // Find the end of the BEGIN line
-        let begin_end = text[begin..]
-            .find("-----")
-            .and_then(|i| text[begin + i + 5..].find("-----"))
-            .map(|i| begin + i + 10);
-        let begin_line_end = match begin_end {
-            Some(i) => i,
-            None => break,
-        };
-
-        // Extract the label
-        let begin_line = &text[begin..begin_line_end];
-        let label = begin_line
-            .trim()
-            .trim_start_matches("-----BEGIN ")
-            .trim_end_matches("-----")
-            .to_string();
-
-        // Find END marker for same label
-        let end_marker = format!("-----END {}-----", label);
-        let end_pos = match text[begin_line_end..].find(&end_marker) {
-            Some(i) => begin_line_end + i,
-            None => {
-                return Err(ServerError::internal_error(
-                    "found BEGIN but no matching END",
-                ));
-            }
-        };
-
-        let body_start = begin_line_end;
-        let body_end = end_pos;
-
-        let body_text = &text[body_start..body_end];
-
-        // Decode using RFC7468 strict decoder
-        let cleaned = body_text
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<String>();
-
-        let (_, der) = pem_rfc7468::decode_vec(cleaned.as_bytes())
-            .map_err(|e| ServerError::internal_error(&format!("pem decode: {e}")))?;
-
-        blocks.push((label, der));
-
-        pos = end_pos + end_marker.len();
-    }
+    let blocks = pems
+        .into_iter()
+        .map(|p| (p.tag().to_string(), p.contents().to_vec()))
+        .collect();
 
     Ok(blocks)
 }
@@ -90,7 +40,7 @@ fn parse_cert_chain(bytes: &[u8]) -> ServerResult<Vec<CertificateDer<'static>>> 
 
     let certs = blocks
         .into_iter()
-        .filter(|(label, _)| label == "CERTIFICATE")
+        .filter(|(label, _)| label.to_uppercase() == "CERTIFICATE")
         .map(|(_, der)| CertificateDer::from(der))
         .collect::<Vec<_>>();
 

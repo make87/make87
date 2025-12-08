@@ -34,10 +34,12 @@ mongodb = "3"
 rcgen = "0.14.5"
 arc-swap = "=1.7.1"
 pem-rfc7468 = { version = "1.0.0", features = ["alloc"] }
+pem = "3.0.6"
 # http3 and quic
 quinn.workspace = true
 quinn-proto.workspace = true
 web-transport-quinn = "0.10.1"
+
 
 # Server-specific serialization
 bson = { version = "3", features = ["serde_with-3", "chrono-0_4"] }
