@@ -5,7 +5,6 @@ use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
 
 use crate::auth::claims::Claims;
-use crate::auth::tunnel_token::issue_tunnel_token;
 use crate::models::device::{
     DeviceDoc, HeartbeatRequest, HeartbeatResponse, PublicDevice, UpdateDeviceBody,
 };
@@ -24,21 +23,6 @@ pub fn create_route() -> Router<AppState> {
                 .delete(delete_device),
         )
         .route("/{id}/heartbeat", post(post_heartbeat))
-        .route("/{id}/token", get(get_tunnel_token))
-}
-
-async fn get_tunnel_token(
-    claims: Claims,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> ServerAppResult<String> {
-    // only return to the node itself
-    if !claims.has_scope_and_role(&format!("device:{}", id), Role::Editor) {
-        return Err(ServerError::unauthorized("missing token"));
-    }
-    // 30s ttl should be enough to open a tunnel
-    let token = issue_tunnel_token(&id, 30, &state.config.forward_secret)?;
-    Ok(ServerResponse::builder().ok().body(token).build())
 }
 
 async fn get_devices(

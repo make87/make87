@@ -25,6 +25,7 @@ pub async fn run_logs(device: &str) -> Result<()> {
     };
     let (_, mut io) = open_quic_io(
         &base,
+        &token,
         &dev.short_id,
         stream_type,
         config.trust_invalid_server_cert,

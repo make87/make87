@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use axum_server::tls_rustls::RustlsConfig;
+use reqwest::StatusCode;
 use tokio::sync::watch;
 use tower_http::{
     compression::CompressionLayer,
@@ -77,7 +78,10 @@ pub async fn serve(
         .layer(SetSensitiveHeadersLayer::new(std::iter::once(
             header::AUTHORIZATION,
         )))
-        .layer(TimeoutLayer::new(Duration::from_secs(30)))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(30),
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .with_state(state.clone());
@@ -117,11 +121,7 @@ pub async fn serve(
     });
 
     // ===== QUIC SERVER =====
-    let quic_task = tokio::spawn(run_quic_endpoint(
-        cfg.clone(),
-        relay.clone(),
-        reload_rx.clone(),
-    ));
+    let quic_task = tokio::spawn(run_quic_endpoint(state.clone(), reload_rx.clone()));
 
     let _ = tokio::join!(https_task, quic_task);
 

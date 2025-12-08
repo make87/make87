@@ -23,6 +23,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
     };
     let (_, io) = open_quic_io(
         &base,
+        &token,
         &dev.short_id,
         stream_type,
         config.trust_invalid_server_cert,

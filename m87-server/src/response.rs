@@ -59,10 +59,10 @@ where
         self
     }
 
-    pub fn headers(mut self, headers: HeaderMap) -> Self {
-        self.headers = Some(headers);
-        self
-    }
+    // pub fn headers(mut self, headers: HeaderMap) -> Self {
+    //     self.headers = Some(headers);
+    //     self
+    // }
 
     pub fn status_code(mut self, status_code: StatusCode) -> Self {
         self.status_code = Some(status_code);
@@ -74,50 +74,50 @@ where
         self
     }
 
-    pub fn switching_protocols(mut self) -> Self {
-        self.status_code = Some(StatusCode::SWITCHING_PROTOCOLS);
-        self
-    }
+    // pub fn switching_protocols(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::SWITCHING_PROTOCOLS);
+    //     self
+    // }
 
-    pub fn created(mut self) -> Self {
-        self.status_code = Some(StatusCode::CREATED);
-        self
-    }
+    // pub fn created(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::CREATED);
+    //     self
+    // }
 
-    pub fn accepted(mut self) -> Self {
-        self.status_code = Some(StatusCode::ACCEPTED);
-        self
-    }
+    // pub fn accepted(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::ACCEPTED);
+    //     self
+    // }
 
-    pub fn no_content(mut self) -> Self {
-        self.status_code = Some(StatusCode::NO_CONTENT);
-        self
-    }
+    // pub fn no_content(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::NO_CONTENT);
+    //     self
+    // }
 
-    pub fn bad_request(mut self) -> Self {
-        self.status_code = Some(StatusCode::BAD_REQUEST);
-        self
-    }
+    // pub fn bad_request(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::BAD_REQUEST);
+    //     self
+    // }
 
-    pub fn unauthorized(mut self) -> Self {
-        self.status_code = Some(StatusCode::UNAUTHORIZED);
-        self
-    }
+    // pub fn unauthorized(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::UNAUTHORIZED);
+    //     self
+    // }
 
-    pub fn forbidden(mut self) -> Self {
-        self.status_code = Some(StatusCode::FORBIDDEN);
-        self
-    }
+    // pub fn forbidden(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::FORBIDDEN);
+    //     self
+    // }
 
-    pub fn not_found(mut self) -> Self {
-        self.status_code = Some(StatusCode::NOT_FOUND);
-        self
-    }
+    // pub fn not_found(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::NOT_FOUND);
+    //     self
+    // }
 
-    pub fn internal_server_error(mut self) -> Self {
-        self.status_code = Some(StatusCode::INTERNAL_SERVER_ERROR);
-        self
-    }
+    // pub fn internal_server_error(mut self) -> Self {
+    //     self.status_code = Some(StatusCode::INTERNAL_SERVER_ERROR);
+    //     self
+    // }
 
     pub fn pagination(mut self, pagination: ResponsePagination) -> Self {
         self.pagination = Some(pagination);

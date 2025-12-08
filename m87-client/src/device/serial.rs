@@ -50,6 +50,7 @@ pub async fn open_serial(device: &str, port: &str, baud: u32) -> Result<()> {
     };
     let (_, remote_io) = open_quic_io(
         &host,
+        &token,
         &dev.short_id,
         stream_type,
         cfg.trust_invalid_server_cert,

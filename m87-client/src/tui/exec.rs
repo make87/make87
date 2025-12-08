@@ -46,6 +46,7 @@ pub async fn run_exec(device: &str, command: Vec<String>, stdin: bool, tty: bool
     };
     let (_, io) = open_quic_io(
         &base,
+        &token,
         &dev.short_id,
         stream_type,
         config.trust_invalid_server_cert,

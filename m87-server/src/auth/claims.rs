@@ -3,9 +3,8 @@ use std::sync::Arc;
 use axum::{extract::FromRequestParts, http::request::Parts};
 use axum_extra::TypedHeader;
 use futures::TryStreamExt;
-use headers::{authorization::Bearer, Authorization};
-use mongodb::{bson::Document, options::FindOptions, Collection};
-use tracing::info;
+use headers::{Authorization, authorization::Bearer};
+use mongodb::{Collection, bson::Document, options::FindOptions};
 
 use crate::{
     auth::access_control::AccessControlled,

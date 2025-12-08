@@ -20,15 +20,15 @@ impl RelayState {
         })
     }
 
-    pub async fn register_tunnel(&self, device_id: String, conn: Connection) {
+    pub async fn register_tunnel(&self, device_id: &str, conn: Connection) {
         {
             let mut t = self.tunnels.write().await;
-            t.insert(device_id.clone(), conn);
+            t.insert(device_id.to_string(), conn);
         }
 
         {
             let mut lost = self.lost.write().await;
-            lost.remove(&device_id);
+            lost.remove(device_id);
         }
     }
 

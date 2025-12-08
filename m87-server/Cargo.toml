@@ -38,6 +38,7 @@ rustls-pemfile = "2.2.0"
 # http3 and quic
 quinn.workspace = true
 quinn-proto.workspace = true
+web-transport-quinn = "0.10.1"
 
 # Server-specific serialization
 bson = { version = "3", features = ["serde_with-3", "chrono-0_4"] }

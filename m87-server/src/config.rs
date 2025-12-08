@@ -1,4 +1,3 @@
-use base64::{Engine, prelude::BASE64_STANDARD};
 use serde::Deserialize;
 
 use crate::response::ServerResult;
@@ -18,7 +17,6 @@ pub struct AppConfig {
     pub oauth: OAuthConfig,
     pub public_address: String,
     pub unified_port: u16,
-    pub forward_secret: String,
     pub admin_key: Option<String>,
     pub is_staging: bool,
     pub admin_emails: Vec<String>,
@@ -39,8 +37,6 @@ impl AppConfig {
             std::env::var("OAUTH_AUDIENCE").unwrap_or_else(|_| "https://auth.make87.com".into());
 
         let public_address = std::env::var("PUBLIC_ADDRESS").unwrap_or_else(|_| "localhost".into());
-        let forward_secret =
-            std::env::var("FORWARD_SECRET").unwrap_or_else(|_| "change_me_in_prod".into());
 
         let is_staging = std::env::var("STAGING").unwrap_or("1".to_string()) == "1";
 
@@ -75,7 +71,6 @@ impl AppConfig {
             oauth: OAuthConfig { issuer, audience },
             public_address,
             unified_port,
-            forward_secret,
             is_staging,
             admin_emails,
             users_need_approval,

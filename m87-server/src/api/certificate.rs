@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tokio::{fs, sync::watch};
-use tracing::{info, warn};
+use tracing::warn;
 
 use quinn::{ServerConfig as QuicServerConfig, TransportConfig};
 use quinn_proto::crypto::rustls::QuicServerConfig as QuinnQuicServerCrypto;

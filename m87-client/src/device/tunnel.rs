@@ -183,7 +183,8 @@ async fn tunnel_device_port_tcp(
         &tunnel_spec.local_port, device_short_id, remote_host, &tunnel_spec.remote_port
     );
 
-    let (_, conn) = connect_quic_only(host_name, token, trust_invalid_server_cert).await?;
+    let (_, conn) =
+        connect_quic_only(host_name, token, device_short_id, trust_invalid_server_cert).await?;
 
     loop {
         tokio::select! {
@@ -241,7 +242,8 @@ pub async fn tunnel_device_port_udp(
     );
 
     // --- 1. Establish QUIC connection once (reused for all flows) ---
-    let (_endpoint, conn) = connect_quic_only(host_name, device_short_id, trust_invalid).await?;
+    let (_endpoint, conn) =
+        connect_quic_only(host_name, token, device_short_id, trust_invalid).await?;
 
     // --- 2. Bind local UDP socket ---
     let local_addr = SocketAddr::from(([0, 0, 0, 0], tunnel_spec.local_port));

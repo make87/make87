@@ -63,6 +63,7 @@ pub async fn open_sftp_session(device_name: &str) -> anyhow::Result<SftpSession>
     };
     let (_, io) = open_quic_io(
         &host,
+        &token,
         &dev.short_id,
         stream_type,
         cfg.trust_invalid_server_cert,

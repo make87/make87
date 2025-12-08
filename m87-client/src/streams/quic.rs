@@ -31,10 +31,11 @@ async fn resolve_host(host: &str, port: u16) -> Result<SocketAddr> {
 }
 
 pub async fn get_quic_connection(
-    host_name: String,
+    host_name: &str,
+    token: &str,
     trust_invalid_server_cert: bool,
 ) -> Result<(Endpoint, quinn::Connection)> {
-    let server_addr = resolve_host(&host_name, 443).await?;
+    let server_addr = resolve_host(host_name, 443).await?;
 
     // 2. Root store (system roots)
     let mut root_store = RootCertStore::empty();
@@ -76,10 +77,18 @@ pub async fn get_quic_connection(
     endpoint.set_default_client_config(client_cfg);
 
     let connecting = endpoint
-        .connect(server_addr, &host_name)
+        .connect(server_addr, host_name)
         .context("QUIC connect() failed")?;
 
     let conn = connecting.await.context("QUIC handshake failed")?;
+
+    let (mut send, _) = conn.open_bi().await?;
+
+    let token_bytes = token.as_bytes();
+    send.write_all(&(token_bytes.len() as u16).to_be_bytes())
+        .await?;
+    send.write_all(token_bytes).await?;
+    send.finish().ok();
 
     Ok((endpoint, conn))
 }
@@ -127,22 +136,24 @@ impl AsyncWrite for QuicIo {
 
 pub async fn open_quic_io(
     host: &str,
+    token: &str,
     device_short_id: &str,
     stream_type: StreamType,
     trust_invalid: bool,
 ) -> Result<(quinn::Connection, QuicIo)> {
-    let (_endpoint, conn) = connect_quic_only(host, device_short_id, trust_invalid).await?;
+    let (_endpoint, conn) = connect_quic_only(host, token, device_short_id, trust_invalid).await?;
     let io = open_quic_stream(&conn, stream_type).await?;
     Ok((conn, io))
 }
 
 pub async fn connect_quic_only(
     host: &str,
+    token: &str,
     device_short_id: &str,
     trust_invalid: bool,
 ) -> Result<(Endpoint, quinn::Connection)> {
     let full_host = format!("{}.{}", device_short_id, host);
-    get_quic_connection(full_host, trust_invalid).await
+    get_quic_connection(&full_host, token, trust_invalid).await
 }
 
 pub async fn open_quic_stream(conn: &quinn::Connection, stream_type: StreamType) -> Result<QuicIo> {

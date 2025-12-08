@@ -31,6 +31,7 @@ pub async fn tunnel_device_ssh(device_name: &str, local_port: u16) -> Result<()>
 
     let (_, conn) = connect_quic_only(
         &hostname,
+        &token,
         &device_short_id,
         config.trust_invalid_server_cert,
     )

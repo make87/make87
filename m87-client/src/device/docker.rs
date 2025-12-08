@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, UNIX_EPOCH};
@@ -186,9 +186,12 @@ async fn handle_docker_connection(mut local: UnixStream, device_name: &str) -> R
     let token = AuthManager::get_cli_token().await?;
 
     // Connect via QUIC
-    let stream_type = StreamType::Docker { token };
+    let stream_type = StreamType::Docker {
+        token: token.clone(),
+    };
     let (_, mut io) = open_quic_io(
         &base,
+        &token,
         &dev.short_id,
         stream_type,
         config.trust_invalid_server_cert,

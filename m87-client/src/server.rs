@@ -257,38 +257,6 @@ pub async fn report_device_details(
     }
 }
 
-// Agent-specific: Request token for control tunnel
-#[cfg(feature = "agent")]
-pub async fn request_control_tunnel_token(
-    api_url: &str,
-    token: &str,
-    device_id: &str,
-    trust_invalid_server_cert: bool,
-) -> Result<String> {
-    let client = get_client(trust_invalid_server_cert)?;
-    let url = format!(
-        "{}/device/{}/token",
-        api_url.trim_end_matches('/'),
-        device_id
-    );
-
-    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send());
-    if let Err(e) = res {
-        eprintln!("[Device] Error reporting device details: {}", e);
-        return Err(anyhow!(e));
-    }
-    match res.unwrap().error_for_status() {
-        Ok(r) => {
-            let control_token = r.text().await?.trim_matches('"').to_string();
-            Ok(control_token)
-        }
-        Err(e) => {
-            eprintln!("[Device] Error reporting device details: {}", e);
-            Err(anyhow!(e))
-        }
-    }
-}
-
 // Agent-specific: Maintain persistent control tunnel connection
 #[cfg(feature = "agent")]
 pub async fn connect_control_tunnel() -> Result<()> {
@@ -302,42 +270,30 @@ pub async fn connect_control_tunnel() -> Result<()> {
     let device_id = config.device_id.clone();
     let short_id = short_device_id(&device_id);
 
-    // 1) Request tunnel token
-    let control_tunnel_token = request_control_tunnel_token(
-        &config.get_server_url(),
-        &token,
-        &device_id,
-        config.trust_invalid_server_cert,
-    )
-    .await?;
-
     // 2) Build hostname control.<domain>
     let control_host = format!("control.{}", config.get_server_hostname());
-    info!("Connecting QUIC control tunnel to {} (short_id={})", control_host, short_id);
+    info!(
+        "Connecting QUIC control tunnel to {} (short_id={})",
+        control_host, short_id
+    );
 
     // 3) Establish QUIC connection
     let (_endpoint, quic_conn): (_, Connection) =
-        get_quic_connection(control_host.clone(), config.trust_invalid_server_cert)
+        get_quic_connection(&control_host, &token, config.trust_invalid_server_cert)
             .await
             .context("QUIC connect failed")?;
 
     info!("QUIC connection established. Sending handshake.");
 
-    // ------------------------------------------------------------
-    // 4) Send handshake over a dedicated control stream (bidi)
-    // Use short_id for tunnel registration (must match client's SNI lookup)
-    // ------------------------------------------------------------
+    // 4) send device id to to tell the server the device (has to matchup with the sent api key / token)
     let mut send = quic_conn
         .open_bi()
         .await
         .context("failed to open QUIC control handshake stream")?
         .0;
 
-    let handshake = format!(
-        "M87 device_id={} token={}\n",
-        short_id, control_tunnel_token
-    );
-    send.write_all(handshake.as_bytes())
+    // send device id
+    send.write_all(short_id.as_bytes())
         .await
         .context("failed to send QUIC handshake")?;
     send.finish().ok();

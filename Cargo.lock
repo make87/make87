@@ -2578,6 +2578,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "web-transport-quinn",
 ]
 
 [[package]]
@@ -3424,6 +3425,7 @@ version = "0.11.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1906b49b0c3bc04b5fe5d86a77925ae6524a19b816ae38ce1e426255f1d8a31"
 dependencies = [
+ "aws-lc-rs",
  "bytes",
  "fastbloom",
  "getrandom 0.3.4",
@@ -5438,6 +5440,48 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "web-transport-proto"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b5400535d6dd4c07dc86e83651a838fd513de7f5011d4e4eafa239fa4d0ded4"
+dependencies = [
+ "bytes",
+ "http 1.4.0",
+ "thiserror 2.0.17",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "web-transport-quinn"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91815d3170c715230c94b5107a71ccf81646513e548ee1408c3ce285d021d6ca"
+dependencies = [
+ "bytes",
+ "futures",
+ "http 1.4.0",
+ "log",
+ "quinn",
+ "rustls 0.23.35",
+ "rustls-native-certs",
+ "thiserror 2.0.17",
+ "tokio",
+ "url",
+ "web-transport-proto",
+ "web-transport-trait",
+]
+
+[[package]]
+name = "web-transport-trait"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f4bafa8c6ff708042f67ef8031ca0f342822fd785b70f36a4b2c014760fc442"
+dependencies = [
+ "bytes",
 ]
 
 [[package]]
