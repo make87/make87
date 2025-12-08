@@ -1,5 +1,6 @@
 use crate::streams::quic::open_quic_io;
 use crate::streams::stream_type::StreamType;
+use crate::util::shutdown::SHUTDOWN;
 use crate::{auth::AuthManager, config::Config, devices};
 use anyhow::Result;
 use termion::raw::IntoRawMode;
@@ -37,7 +38,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
     // Enter raw mode so Ctrl+C is sent as byte 0x03 instead of being handled locally
     let _raw_mode = std::io::stdout().into_raw_mode()?;
 
-    println!("Connected. Press Ctrl+D to exit.\n\r");
+    println!("Connected. Press Ctrl+C to exit.\n\r");
 
     // === Spawn task: stdin → writer ===
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -101,6 +102,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
     tokio::select! {
         _ = &mut reader_task => writer_task.abort(),
         _ = &mut writer_task => {},
+        _ = SHUTDOWN.cancelled() => {},
     }
 
     Ok(())

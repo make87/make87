@@ -5,7 +5,7 @@ use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
 use std::{net::SocketAddr, sync::Arc};
 use std::{pin::Pin, task::Poll};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::streams::stream_type::StreamType;
 use crate::util::tls::NoVerify; // reuse the same NoVerify struct
@@ -83,12 +83,16 @@ pub async fn get_quic_connection(
     let conn = connecting.await.context("QUIC handshake failed")?;
 
     let (mut send, _) = conn.open_bi().await?;
-
+    info!("Connected to server");
+    info!("Sending token");
     let token_bytes = token.as_bytes();
     send.write_all(&(token_bytes.len() as u16).to_be_bytes())
         .await?;
     send.write_all(token_bytes).await?;
+    send.flush().await?;
     send.finish().ok();
+
+    info!("Token sent");
 
     Ok((endpoint, conn))
 }
@@ -157,6 +161,7 @@ pub async fn connect_quic_only(
 }
 
 pub async fn open_quic_stream(conn: &quinn::Connection, stream_type: StreamType) -> Result<QuicIo> {
+    info!("Opening QUIC stream");
     let (mut send, recv) = conn.open_bi().await?;
 
     let json = serde_json::to_vec(&stream_type)?;
@@ -165,6 +170,8 @@ pub async fn open_quic_stream(conn: &quinn::Connection, stream_type: StreamType)
     send.write_all(&len).await?;
     send.write_all(&json).await?;
     send.flush().await?;
+
+    info!("Stream opened");
 
     Ok(QuicIo { recv, send })
 }

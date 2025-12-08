@@ -262,6 +262,7 @@ pub async fn report_device_details(
 pub async fn connect_control_tunnel() -> Result<()> {
     use m87_shared::device::short_device_id;
     use quinn::Connection;
+    use tokio::io::AsyncWriteExt;
 
     use crate::streams::quic::get_quic_connection;
 
@@ -293,9 +294,14 @@ pub async fn connect_control_tunnel() -> Result<()> {
         .0;
 
     // send device id
+    //
+    send.write_all(&(short_id.len() as u16).to_be_bytes())
+        .await?;
     send.write_all(short_id.as_bytes())
         .await
         .context("failed to send QUIC handshake")?;
+
+    send.flush().await?;
     send.finish().ok();
 
     info!("Handshake sent. Control tunnel active.");

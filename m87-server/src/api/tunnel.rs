@@ -182,18 +182,19 @@ async fn handle_control_tunnel(
 ) -> ServerResult<()> {
     // Accept first control handshake stream
     let (mut send, mut recv) = conn.accept_bi().await?;
+    let mut len_buf = [0u8; 4];
+    recv.read_exact(&mut len_buf)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "control: empty handshake"))?;
+    let len = u32::from_be_bytes(len_buf) as usize;
 
-    let mut buf = vec![0; 1024];
-    let n = recv
-        .read(&mut buf)
-        .await?
-        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "control: empty handshake"))?;
-    if n == 0 {
-        warn!("control: empty handshake");
-        return Ok(());
-    }
+    // json body
+    let mut buf = vec![0u8; len];
+    recv.read_exact(&mut buf)
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::UnexpectedEof, "control: empty handshake"))?;
 
-    let device_id = String::from_utf8_lossy(&buf[..n]).to_string();
+    let device_id = String::from_utf8_lossy(&buf).to_string();
 
     // ndoe has editor permissions to itself
     let _ = claims
@@ -233,8 +234,12 @@ async fn handle_control_tunnel(
                 warn!(%device_id, "connection reset by peer");
             }
 
+            ConnectionError::TransportError(err) => {
+                warn!(%device_id, "device QUIC stack error: {}", err);
+            }
+
             // --- UNINTENTIONAL LOSS (reconnect expected) ---
-            ConnectionError::TransportError(_) | ConnectionError::TimedOut => {
+            ConnectionError::TimedOut => {
                 warn!(%device_id, "device lost connection; waiting for reconnect");
                 state.relay.mark_tunnel_lost(&device_id).await;
 
