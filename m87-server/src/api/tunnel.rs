@@ -122,7 +122,6 @@ async fn handle_quic_connection(conn: quinn::Connection, state: AppState) -> Ser
         .unwrap_or_default();
 
     let public = &state.config.public_address;
-    let control_host = format!("control.{public}");
 
     let Some(token) = extract_token(&conn).await else {
         conn.close(0x100u32.into(), b"missing-token");
@@ -130,9 +129,9 @@ async fn handle_quic_connection(conn: quinn::Connection, state: AppState) -> Ser
     };
     let claims = Claims::from_bearer_or_key(&token, &state.db, &state.config).await?;
 
-    if sni == control_host {
+    if let Some(device_id) = extract_device_id_from_control_sni(&sni, public) {
         info!(%sni, "control tunnel connection");
-        if let Err(e) = handle_control_tunnel(conn, claims, state).await {
+        if let Err(e) = handle_control_tunnel(conn, &device_id, claims, state).await {
             error!(%sni, %e, "error handling control tunnel");
         }
         return Ok(());
@@ -163,6 +162,25 @@ async fn handle_quic_connection(conn: quinn::Connection, state: AppState) -> Ser
     Ok(())
 }
 
+fn extract_device_id_from_control_sni(sni: &str, public_domain: &str) -> Option<String> {
+    // Expected patters:
+    //   "control-<deviceid>.<public_domain>"
+    if sni.starts_with("control-") {
+        if let Some(stripped) = sni
+            .strip_prefix("control-")
+            .and_then(|s| s.strip_suffix(&public_domain))
+        {
+            let short_id = stripped.trim_end_matches('.'); // remove trailing dot
+            if short_id.is_empty() {
+                return None;
+            }
+            return Some(short_id.to_string());
+        }
+    }
+
+    None
+}
+
 fn extract_device_id_from_sni(sni: &str, public_domain: &str) -> Option<String> {
     // Expected patterns:
     //   "<deviceid>.<public_domain>"
@@ -181,26 +199,16 @@ fn extract_device_id_from_sni(sni: &str, public_domain: &str) -> Option<String> 
 
 async fn handle_control_tunnel(
     conn: quinn::Connection,
+    device_short_id: &str,
     claims: Claims,
     state: AppState,
 ) -> ServerResult<()> {
-    // Accept first control handshake stream
-    let (mut send, mut recv) = conn.accept_bi().await?;
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf)
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::UnexpectedEof, "control: empty handshake"))?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-
-    // json body
-    let mut buf = vec![0u8; len];
-    recv.read_exact(&mut buf)
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::UnexpectedEof, "control: empty handshake"))?;
-
-    let device_id = String::from_utf8_lossy(&buf).to_string();
-
-    // ndoe has editor permissions to itself
+    // node has editor permissions to itself
+    debug!(
+        "handle_control_tunnel: device_short_id = {}",
+        device_short_id
+    );
+    let device_id = device_short_id.to_string();
     let _ = claims
         .find_one_with_scope_and_role::<DeviceDoc>(
             &state.db.devices(),
@@ -266,9 +274,6 @@ async fn handle_control_tunnel(
             }
         }
     });
-
-    // optional ack
-    let _ = send.write_all(b"OK").await;
 
     Ok(())
 }

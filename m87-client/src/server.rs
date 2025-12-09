@@ -262,7 +262,7 @@ pub async fn report_device_details(
 pub async fn connect_control_tunnel() -> Result<()> {
     use m87_shared::device::short_device_id;
     use quinn::Connection;
-    use tokio::io::AsyncWriteExt;
+    use tracing::debug;
 
     use crate::streams::quic::get_quic_connection;
 
@@ -271,47 +271,27 @@ pub async fn connect_control_tunnel() -> Result<()> {
     let device_id = config.device_id.clone();
     let short_id = short_device_id(&device_id);
 
-    // 2) Build hostname control.<domain>
-    let control_host = format!("control.{}", config.get_server_hostname());
-    info!(
+    let control_host = format!("control-{}.{}", short_id, config.get_server_hostname());
+    debug!(
         "Connecting QUIC control tunnel to {} (short_id={})",
         control_host, short_id
     );
 
-    // 3) Establish QUIC connection
     let (_endpoint, quic_conn): (_, Connection) =
         get_quic_connection(&control_host, &token, config.trust_invalid_server_cert)
             .await
             .context("QUIC connect failed")?;
 
-    info!("QUIC connection established. Sending handshake.");
+    debug!("QUIC connection established. Sending handshake.");
 
-    // 4) send device id to to tell the server the device (has to matchup with the sent api key / token)
-    let mut send = quic_conn
-        .open_bi()
-        .await
-        .context("failed to open QUIC control handshake stream")?
-        .0;
-
-    // send device id
-    //
-    send.write_all(&(short_id.len() as u32).to_be_bytes())
-        .await?;
-    send.write_all(short_id.as_bytes())
-        .await
-        .context("failed to send QUIC handshake")?;
-
-    send.flush().await?;
-    send.finish().ok();
-
-    info!("Handshake sent. Control tunnel active.");
+    debug!("Handshake sent. Control tunnel active.");
 
     loop {
         use crate::streams::{self, quic::QuicIo};
 
         tokio::select! {
             incoming = quic_conn.accept_bi() => {
-                info!("QUIC: new control stream accepted");
+                debug!("QUIC: new control stream accepted");
 
                 let Ok((quic_send, quic_recv)) = incoming else {
                     warn!("Control QUIC stream closed — reconnect required");
@@ -323,7 +303,7 @@ pub async fn connect_control_tunnel() -> Result<()> {
                     send: quic_send,
                 };
 
-                info!("QUIC: new control stream accepted");
+                debug!("QUIC: new control stream accepted");
 
                 // Spawn proxy task
                 tokio::spawn(async move {
@@ -340,7 +320,7 @@ pub async fn connect_control_tunnel() -> Result<()> {
         }
     }
 
-    info!("control tunnel terminated");
+    debug!("control tunnel terminated");
     Ok(())
 }
 

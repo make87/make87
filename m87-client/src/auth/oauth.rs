@@ -2,7 +2,7 @@ use anyhow::Result;
 use openidconnect::core::{CoreClient, CoreDeviceAuthorizationResponse, CoreProviderMetadata};
 use openidconnect::{
     AuthType, ClientId, DeviceAuthorizationUrl, EndpointMaybeSet, EndpointSet, IssuerUrl,
-    OAuth2TokenResponse, RefreshToken, RequestTokenError, Scope,
+    OAuth2TokenResponse, RefreshToken, Scope,
 };
 use openidconnect::{EndpointNotSet, reqwest};
 use serde::{Deserialize, Serialize};
