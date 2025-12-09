@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use quinn::Connection;
 use tokio::sync::RwLock;
+use tracing::info;
 
 use crate::response::ServerResult;
 
@@ -21,6 +22,7 @@ impl RelayState {
     }
 
     pub async fn register_tunnel(&self, device_id: &str, conn: Connection) {
+        info!("Registering tunnel for device {}", device_id);
         {
             let mut t = self.tunnels.write().await;
             t.insert(device_id.to_string(), conn);
@@ -33,6 +35,7 @@ impl RelayState {
     }
 
     pub async fn remove_tunnel(&self, device_id: &str) {
+        info!("Removing tunnel for device {}", device_id);
         {
             let mut t = self.tunnels.write().await;
             t.remove(device_id);
@@ -58,6 +61,9 @@ impl RelayState {
     }
 
     pub async fn get_tunnel(&self, device_id: &str) -> Option<Connection> {
+        info!("Getting tunnel for device {}", device_id);
+        // print all keys
+        println!("Tunnels: {:?}", self.tunnels.read().await.keys());
         let t = self.tunnels.read().await;
         t.get(device_id).cloned()
     }

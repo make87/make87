@@ -184,7 +184,7 @@ pub async fn handle_auth_request(
     accept: bool,
     trust_invalid_server_cert: bool,
 ) -> Result<(), anyhow::Error> {
-    let url = format!("{}/auth/request/{}", api_url, request_id);
+    let url = format!("{}/auth/request/approve", api_url);
     let client = get_client(trust_invalid_server_cert)?;
 
     let res = retry_async!(
@@ -282,40 +282,53 @@ pub async fn connect_control_tunnel() -> Result<()> {
             .await
             .context("QUIC connect failed")?;
 
-    debug!("QUIC connection established. Sending handshake.");
-
-    debug!("Handshake sent. Control tunnel active.");
-
     loop {
+        use std::time::Duration;
+
         use crate::streams::{self, quic::QuicIo};
 
         tokio::select! {
             incoming = quic_conn.accept_bi() => {
-                debug!("QUIC: new control stream accepted");
+                match incoming {
+                    Ok((quic_send, quic_recv)) => {
+                        debug!("QUIC: new control stream accepted");
 
-                let Ok((quic_send, quic_recv)) = incoming else {
-                    warn!("Control QUIC stream closed — reconnect required");
-                    break;
-                };
+                        let io = QuicIo {
+                            recv: quic_recv,
+                            send: quic_send,
+                        };
 
-                let io = QuicIo {
-                    recv: quic_recv,
-                    send: quic_send,
-                };
-
-                debug!("QUIC: new control stream accepted");
-
-                // Spawn proxy task
-                tokio::spawn(async move {
-                    if let Err(e) = streams::router::handle_incoming_stream(io).await {
-                        warn!("control proxy closed with error: {:?}", e);
+                        tokio::spawn(async move {
+                            if let Err(e) = streams::router::handle_incoming_stream(io).await {
+                                warn!("control proxy closed with error: {e:?}");
+                            }
+                        });
                     }
-                });
+                    Err(e) => {
+                        warn!(error = ?e, "Control QUIC stream accept failed — reconnect required");
+
+                        if let Some(reason) = quic_conn.close_reason() {
+                            warn!(?reason, "Control QUIC connection close reason");
+                        }
+
+                        break;
+                    }
+                }
             }
 
             _ = quic_conn.closed() => {
-                warn!("QUIC control connection closed by server");
+                if let Some(reason) = quic_conn.close_reason() {
+                    warn!(?reason, "QUIC control connection closed by peer");
+                } else {
+                    warn!("QUIC control connection closed by peer");
+                }
                 break;
+            }
+            _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                if let Err(e) = quic_conn.open_uni().await {
+                    warn!(?e, "probe failed → connection dead");
+                    break;
+                }
             }
         }
     }

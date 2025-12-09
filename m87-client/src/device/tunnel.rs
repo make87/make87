@@ -1,23 +1,22 @@
-use std::net::IpAddr;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::Result;
-use anyhow::anyhow;
-use tokio::io;
-use tokio::net::TcpListener;
-use tokio::net::UdpSocket;
-use tracing::warn;
-
-use crate::device::udp::UdpFlowManager;
 use crate::devices;
+use crate::streams::quic::QuicIo;
 use crate::streams::quic::connect_quic_only;
 use crate::streams::quic::open_quic_stream;
-use crate::streams::stream_type::Additions;
 use crate::streams::stream_type::Protocols;
 use crate::streams::stream_type::StreamType;
 use crate::util::shutdown::SHUTDOWN;
 use crate::{auth::AuthManager, config::Config};
+use anyhow::Result;
+use anyhow::anyhow;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use tokio::io;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
+use tokio::net::UdpSocket;
+use tracing::warn;
 use tracing::{error, info};
 
 #[derive(Debug, Clone)]
@@ -26,7 +25,6 @@ pub struct TunnelSpec {
     pub remote_port: u16,
     pub local_port: u16,
     pub protocol: Protocols,
-    pub addition: Option<Additions>,
 }
 
 // Examples accepted:
@@ -35,7 +33,7 @@ pub struct TunnelSpec {
 // "192.168.1.2:8080:1337"
 // "8080/tcp"
 // "8080:1337/udp"
-// "192.168.1.2:8080:1337/udp+mcast"
+// "192.168.1.2:8080:1337/udp"
 impl TunnelSpec {
     fn from_list(tunnel_specs: Vec<String>) -> Result<Vec<Self>> {
         let mut specs = Vec::new();
@@ -47,18 +45,12 @@ impl TunnelSpec {
             let tail = parts.next(); // e.g. tcp, udp, udp+mcast, etc.
 
             let mut protocol: Option<Protocols> = None;
-            let mut addition: Option<Additions> = None;
 
             if let Some(t) = tail {
                 for item in t.split('+') {
                     match item.to_lowercase().as_str() {
                         "tcp" => protocol = Some(Protocols::Tcp),
                         "udp" => protocol = Some(Protocols::Udp),
-                        "mcast" => addition = Some(Additions::MCAST),
-                        "udp+mcast" => {
-                            protocol = Some(Protocols::Udp);
-                            addition = Some(Additions::MCAST);
-                        }
                         _ => return Err(anyhow!("invalid protocol/addition '{}'", item)),
                     }
                 }
@@ -87,7 +79,6 @@ impl TunnelSpec {
                         remote_port,
                         local_port,
                         protocol: p,
-                        addition: addition.clone(),
                     });
                 }
                 None => {
@@ -97,7 +88,6 @@ impl TunnelSpec {
                         remote_port,
                         local_port,
                         protocol: Protocols::Tcp,
-                        addition: addition.clone(),
                     });
                 }
             }
@@ -183,7 +173,7 @@ async fn tunnel_device_port_tcp(
         &tunnel_spec.local_port, device_short_id, remote_host, &tunnel_spec.remote_port
     );
 
-    let (_, conn) =
+    let (_endpoint, conn) =
         connect_quic_only(host_name, token, device_short_id, trust_invalid_server_cert).await?;
 
     loop {
@@ -196,7 +186,6 @@ async fn tunnel_device_port_tcp(
                     port: tunnel_spec.remote_port,
                     protocol: Protocols::Tcp,
                     host: tunnel_spec.remote_host.clone(),
-                    addition: None,
                 };
                 let mut quic_io = open_quic_stream(
                     &conn,
@@ -213,6 +202,10 @@ async fn tunnel_device_port_tcp(
                     }
                 });
             }
+            _ = conn.closed() => {
+                info!("Connection closed");
+                break;
+            }
 
             _ = SHUTDOWN.cancelled() => {
                 info!("Shutdown requested — closing TCP port forward");
@@ -224,93 +217,108 @@ async fn tunnel_device_port_tcp(
     Ok(())
 }
 
-pub async fn tunnel_device_port_udp(
+async fn tunnel_device_port_udp(
     host_name: &str,
     token: &str,
     device_short_id: &str,
     tunnel_spec: TunnelSpec,
-    trust_invalid: bool,
+    trust_invalid_server_cert: bool,
 ) -> Result<()> {
-    use crate::streams::quic::connect_quic_only;
     let remote_host = tunnel_spec
         .remote_host
         .clone()
         .unwrap_or("127.0.0.1".to_string());
-    info!(
-        "UDP forward: 127.0.0.1:{} → {}/{}:{}",
-        &tunnel_spec.local_port, device_short_id, remote_host, &tunnel_spec.remote_port
-    );
 
-    // --- 1. Establish QUIC connection once (reused for all flows) ---
     let (_endpoint, conn) =
-        connect_quic_only(host_name, token, device_short_id, trust_invalid).await?;
+        connect_quic_only(host_name, token, device_short_id, trust_invalid_server_cert).await?;
 
-    // --- 2. Bind local UDP socket ---
-    let local_addr = SocketAddr::from(([0, 0, 0, 0], tunnel_spec.local_port));
-    let udp = Arc::new(UdpSocket::bind(local_addr).await?);
-
-    let multicast = match &tunnel_spec.addition {
-        Some(Additions::MCAST) => true,
-        _ => false,
+    let stream_type = StreamType::Port {
+        token: token.to_string(),
+        port: tunnel_spec.remote_port,
+        protocol: Protocols::Udp,
+        host: tunnel_spec.remote_host.clone(),
     };
 
-    // --- 3. Optionally join multicast group ---
-    if multicast {
-        if let Some(group) = tunnel_spec.remote_host.clone() {
-            let group_ip: IpAddr = group
-                .parse()
-                .map_err(|_| anyhow!("Invalid multicast group IP"))?;
-            match group_ip {
-                IpAddr::V4(g) => {
-                    udp.join_multicast_v4(g, std::net::Ipv4Addr::UNSPECIFIED)?;
+    let quic_io = open_quic_stream(&conn, stream_type).await?;
+
+    udp_local_unicast_forward(
+        tunnel_spec.local_port,
+        remote_host,
+        tunnel_spec.remote_port,
+        quic_io,
+        conn,
+    )
+    .await
+}
+
+async fn udp_local_unicast_forward(
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+    mut quic_io: QuicIo,
+    conn: quinn::Connection,
+) -> Result<()> {
+    let local = UdpSocket::bind(("127.0.0.1", local_port)).await?;
+    info!(
+        "UDP forward unicast: 127.0.0.1:{} → {}/{}:{}",
+        local_port,
+        conn.remote_address(),
+        remote_host,
+        remote_port
+    );
+
+    // Connect the local UDP socket to simplify send()
+    local.connect((remote_host.as_str(), remote_port)).await?;
+
+    let local = Arc::new(local);
+    let sock_rx = local.clone();
+    let sock_tx = local.clone();
+
+    let (mut quic_r, mut quic_w) = tokio::io::split(quic_io);
+
+    // QUIC → Local UDP
+    let mut to_udp = tokio::spawn(async move {
+        let mut buf = [0u8; 65535];
+        loop {
+            let n = match quic_r.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    error!("udp unicast read from quic failed: {e}");
+                    break;
                 }
-                IpAddr::V6(g) => {
-                    udp.join_multicast_v6(&g, 0)?;
-                }
+            };
+            if let Err(e) = sock_tx.send(&buf[..n]).await {
+                error!("udp unicast send to socket failed: {e}");
+                break;
             }
-            info!("Joined multicast group {}", group);
         }
-    }
+    });
 
-    // --- 4. Create the manager (with correct arg order!) ---
-    let mgr = Arc::new(UdpFlowManager::new(conn.clone(), udp.clone()));
-    tokio::spawn(mgr.clone().cleanup_task());
-
-    let mut buf = vec![0u8; 65535];
-
-    // --- 5. Main UDP receive loop ---
-    loop {
-        let (n, addr) = udp.recv_from(&mut buf).await?;
-        let src_ip = addr.ip();
-        let src_port = addr.port();
-        let payload = buf[..n].to_vec();
-
-        let mgr_cl = mgr.clone();
-        let token_cl = token.to_string();
-        let host_cl = tunnel_spec.remote_host.clone();
-        let addition_cl = tunnel_spec.addition.clone();
-        let remote_port_cl = tunnel_spec.remote_port.clone();
-
-        tokio::spawn(async move {
-            match mgr_cl
-                .get_or_create_flow(
-                    src_ip,
-                    src_port,
-                    token_cl,
-                    remote_port_cl,
-                    host_cl,
-                    addition_cl,
-                )
-                .await
-            {
-                Ok(tx) => {
-                    // Send the packet into the flow → QUIC task picks it up
-                    if let Err(e) = tx.send(payload).await {
-                        warn!("UDP→QUIC send failed: {}", e);
-                    }
+    // Local UDP → QUIC
+    let mut to_quic = tokio::spawn(async move {
+        let mut buf = [0u8; 65535];
+        loop {
+            let n = match sock_rx.recv(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    error!("udp unicast recv failed: {e}");
+                    break;
                 }
-                Err(e) => warn!("Failed to obtain flow for {src_ip}:{src_port}: {e}"),
+            };
+            if let Err(e) = quic_w.write_all(&buf[..n]).await {
+                error!("udp unicast write to quic failed: {e}");
+                break;
             }
-        });
-    }
+        }
+    });
+
+    tokio::select! {
+        _ = conn.closed() => warn!("QUIC connection closed — stopping UDP unicast forward"),
+        _ = &mut to_udp => {},
+        _ = &mut to_quic => {},
+        _ = SHUTDOWN.cancelled() => warn!("Shutdown requested — stopping UDP unicast"),
+    };
+
+    Ok(())
 }

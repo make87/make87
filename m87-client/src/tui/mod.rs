@@ -3,4 +3,5 @@ pub mod logs;
 pub mod metrics;
 pub mod shell;
 
+pub mod devices;
 pub mod fs;

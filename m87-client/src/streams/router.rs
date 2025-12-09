@@ -44,12 +44,11 @@ pub async fn handle_incoming_stream(mut io: QuicIo) -> anyhow::Result<()> {
         StreamType::Port {
             port,
             host,
-            addition,
             protocol,
             ..
         } => {
             debug!("router: dispatching to port forward handler");
-            handle_port_forward_io(port, host, protocol, addition, &mut io).await;
+            handle_port_forward_io(port, host, protocol, io).await;
         }
         StreamType::Serial { name, baud, .. } => {
             debug!("router: dispatching to serial handler");
@@ -65,7 +64,10 @@ pub async fn handle_incoming_stream(mut io: QuicIo) -> anyhow::Result<()> {
         }
         StreamType::Ssh { .. } => {
             debug!("router: dispatching to ssh handler");
-            handle_ssh_io(io).await;
+            tokio::spawn(async move {
+                handle_ssh_io(io).await;
+            });
+            return Ok(());
         }
     }
     debug!("router: handler finished");

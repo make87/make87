@@ -35,6 +35,8 @@ services:
       - mongo-data:/data/db
     networks:
       - nexus-network
+    ports:
+      - "27017:27017"
 
 networks:
   nexus-network:

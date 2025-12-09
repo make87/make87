@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
 use std::{pin::Pin, task::Poll};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::streams::stream_type::StreamType;
 use crate::util::tls::NoVerify; // reuse the same NoVerify struct
@@ -36,7 +36,19 @@ pub async fn get_quic_connection(
     token: &str,
     trust_invalid_server_cert: bool,
 ) -> Result<(Endpoint, quinn::Connection)> {
-    let server_addr = resolve_host(host_name, 443).await?;
+    // if hostname ends with :port extract port otherwise use 443
+    let port = if let Some(Ok(port)) = host_name
+        .rsplit_once(':')
+        .map(|(_, port)| port.parse::<u16>())
+    {
+        port
+    } else {
+        443
+    };
+    let port_free_host_name = host_name
+        .strip_suffix(&format!(":{}", port))
+        .unwrap_or(host_name);
+    let server_addr = resolve_host(port_free_host_name, port).await?;
 
     // 2. Root store (system roots)
     let mut root_store = RootCertStore::empty();
@@ -80,22 +92,30 @@ pub async fn get_quic_connection(
     endpoint.set_default_client_config(client_cfg);
 
     let connecting = endpoint
-        .connect(server_addr, host_name)
+        .connect(server_addr, port_free_host_name)
         .context("QUIC connect() failed")?;
 
     let conn = connecting.await.context("QUIC handshake failed")?;
 
-    let (mut send, _) = conn.open_bi().await?;
-    info!("Connected to server");
-    info!("Sending token");
+    let (mut send, mut recv) = conn.open_bi().await?;
+    debug!("Connected to server");
+    debug!("Sending token");
     let token_bytes = token.as_bytes();
     send.write_all(&(token_bytes.len() as u16).to_be_bytes())
         .await?;
     send.write_all(token_bytes).await?;
-    send.flush().await?;
-    send.finish().ok();
+    // Indicate no more data from client
+    send.finish()?;
 
-    info!("Token sent");
+    // Wait for server ACK (1 byte = 0x01)
+    debug!("Waiting for server ACK");
+    let mut ack = [0u8; 1];
+    recv.read_exact(&mut ack).await?;
+    debug!("Received server ACK");
+    if ack[0] != 1 {
+        error!("invalid handshake ack");
+        return Err(anyhow::anyhow!("invalid handshake ack"));
+    }
 
     Ok((endpoint, conn))
 }
@@ -164,7 +184,7 @@ pub async fn connect_quic_only(
 }
 
 pub async fn open_quic_stream(conn: &quinn::Connection, stream_type: StreamType) -> Result<QuicIo> {
-    info!("Opening QUIC stream");
+    debug!("Opening QUIC stream");
     let (mut send, recv) = conn.open_bi().await?;
 
     let json = serde_json::to_vec(&stream_type)?;
@@ -174,7 +194,7 @@ pub async fn open_quic_stream(conn: &quinn::Connection, stream_type: StreamType)
     send.write_all(&json).await?;
     send.flush().await?;
 
-    info!("Stream opened");
+    debug!("Stream opened");
 
     Ok(QuicIo { recv, send })
 }

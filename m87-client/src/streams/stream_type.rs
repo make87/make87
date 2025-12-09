@@ -7,12 +7,6 @@ pub enum Protocols {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum Additions {
-    // inticator for multicast forwarding
-    MCAST,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type")]
 pub enum StreamType {
     Terminal {
@@ -29,7 +23,6 @@ pub enum StreamType {
         port: u16,
         protocol: Protocols,
         host: Option<String>,
-        addition: Option<Additions>,
     },
     Serial {
         token: String,

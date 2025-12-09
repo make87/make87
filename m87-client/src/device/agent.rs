@@ -323,11 +323,11 @@ async fn login_and_run() -> Result<()> {
 
     tokio::task::spawn(async {
         loop {
-            println!("Starting control tunnel...");
+            info!("Starting control tunnel...");
             if let Err(e) = server::connect_control_tunnel().await {
-                eprintln!("Control tunnel crashed with error: {e}. Restarting in 10 seconds...");
+                error!("Control tunnel crashed with error: {e}. Restarting in 10 seconds...");
             } else {
-                eprintln!("Control tunnel exited normally. Restarting in 10 seconds...");
+                error!("Control tunnel exited normally. Restarting in 10 seconds...");
             }
             tokio::time::sleep(Duration::from_secs(10)).await;
         }

@@ -34,7 +34,7 @@ async fn main() -> ServerResult<()> {
     // Shared relay state
     let relay_state = Arc::new(RelayState::new()?);
 
-    info!("nexus started");
+    info!("server started");
     if let Err(e) = api::serve::serve(db, relay_state, config).await {
         tracing::error!("Server exited: {:?}", e);
     }

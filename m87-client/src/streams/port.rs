@@ -1,25 +1,27 @@
-use std::net::SocketAddr;
-
-use tokio::{io::AsyncWriteExt, net::TcpStream};
-
-use crate::{
-    streams::quic::QuicIo,
-    streams::stream_type::{Additions, Protocols},
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
 };
+
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpStream, UdpSocket},
+};
+
+use crate::streams::{quic::QuicIo, stream_type::Protocols};
 
 pub async fn handle_port_forward_io(
     port: u16,
     host: Option<String>,
     protocol: Protocols,
-    addition: Option<Additions>,
-    io: &mut QuicIo,
+    mut io: QuicIo,
 ) {
     let host = host.unwrap_or_else(|| "127.0.0.1".to_string());
 
     match protocol {
-        Protocols::Tcp => tcp_forward(host, port, io).await,
+        Protocols::Tcp => tcp_forward(host, port, &mut io).await,
 
-        Protocols::Udp => udp_forward(host, port, addition, io).await,
+        Protocols::Udp => udp_unicast_forward(host, port, io).await,
     }
 }
 
@@ -38,82 +40,66 @@ pub async fn tcp_forward(host: String, port: u16, io: &mut QuicIo) {
     }
 }
 
-pub async fn udp_forward(host: String, port: u16, addition: Option<Additions>, io: &mut QuicIo) {
-    use tokio::net::UdpSocket;
-
-    // Bind to an ephemeral UDP socket
-    let udp = match UdpSocket::bind("0.0.0.0:0").await {
+pub async fn udp_unicast_forward(host: String, port: u16, mut io: QuicIo) {
+    let socket = match UdpSocket::bind("0.0.0.0:0").await {
         Ok(s) => s,
         Err(e) => {
             let _ = io
-                .send
                 .write_all(format!("UDP bind failed: {e}\n").as_bytes())
                 .await;
             return;
         }
     };
 
-    let target: SocketAddr = match format!("{host}:{port}").parse() {
-        Ok(a) => a,
-        Err(e) => {
-            let _ = io
-                .send
-                .write_all(format!("invalid UDP target: {e}\n").as_bytes())
-                .await;
-            return;
-        }
-    };
-
-    // Optional MULTICAST subscription
-    if let Some(Additions::MCAST) = addition {
-        if let Ok(maddr) = host.parse::<std::net::Ipv4Addr>() {
-            // Join multicast group; use INADDR_ANY as interface
-            let _ = udp.join_multicast_v4(maddr, std::net::Ipv4Addr::UNSPECIFIED);
-        }
+    if let Err(e) = socket.connect((host.as_str(), port)).await {
+        let _ = io
+            .write_all(format!("UDP connect failed: {e}\n").as_bytes())
+            .await;
+        return;
     }
 
-    let mut udp_buf = vec![0u8; 65535];
-    let mut quic_buf = vec![0u8; 65535];
+    let socket = Arc::new(socket);
+    let (mut quic_r, mut quic_w) = tokio::io::split(io);
+    let sock_tx = socket.clone();
+    let sock_rx = socket.clone();
 
     // QUIC → UDP
-    let quic_to_udp = async {
+    let to_udp = tokio::spawn(async move {
+        let mut buf = vec![0u8; 65535];
         loop {
-            // read length prefix
-            let mut lenb = [0u8; 2];
-            if io.recv.read_exact(&mut lenb).await.is_err() {
+            let n = match quic_r.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!("udp unicast read from quic failed: {e}");
+                    break;
+                }
+            };
+            if let Err(e) = sock_tx.send(&buf[..n]).await {
+                tracing::error!("udp unicast send to socket failed: {e}");
                 break;
             }
-            let size = u16::from_be_bytes(lenb) as usize;
-
-            if io.recv.read_exact(&mut quic_buf[..size]).await.is_err() {
-                break;
-            }
-
-            let _ = udp.send_to(&quic_buf[..size], target).await;
         }
-    };
+    });
 
     // UDP → QUIC
-    let udp_to_quic = async {
+    let to_quic = tokio::spawn(async move {
+        let mut buf = vec![0u8; 65535];
         loop {
-            match udp.recv_from(&mut udp_buf).await {
-                Ok((size, _peer)) => {
-                    let lenb = (size as u16).to_be_bytes();
-                    if io.send.write_all(&lenb).await.is_err() {
-                        break;
-                    }
-                    if io.send.write_all(&udp_buf[..size]).await.is_err() {
-                        break;
-                    }
-                    let _ = io.send.flush().await;
+            let n = match sock_rx.recv(&mut buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!("udp unicast recv from socket failed: {e}");
+                    break;
                 }
-                Err(_) => break,
+            };
+            if let Err(e) = quic_w.write_all(&buf[..n]).await {
+                tracing::error!("udp unicast write to quic failed: {e}");
+                break;
             }
         }
-    };
+    });
 
-    tokio::select! {
-        _ = quic_to_udp => {}
-        _ = udp_to_quic => {}
-    }
+    let _ = tokio::join!(to_udp, to_quic);
+    tracing::info!("udp unicast forward closed");
 }

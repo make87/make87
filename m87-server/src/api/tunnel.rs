@@ -49,21 +49,23 @@ pub async fn run_quic_endpoint(
                     match incoming {
                         Some(incoming_conn) => {
                             let state_cl = state.clone();
+                            info!("Received incoming QUIC connection");
 
                             tokio::spawn(async move {
                                 match incoming_conn.await {
                                     Ok(conn) => {
 
-                                        if let Ok(req) = web_transport_quinn::Request::accept(conn.clone()).await {
-                                            // browser path
-                                            if let Ok(session) = req.ok().await {
-                                                let _ = handle_webtransport_forward(session, state_cl).await;
-                                            }
-                                            conn.close(0u32.into(), b"");
-                                            return;
-                                        }
+                                        // if let Ok(req) = web_transport_quinn::Request::accept(conn.clone()).await {
+                                        //     // browser path
+                                        //     if let Ok(session) = req.ok().await {
+                                        //         let _ = handle_webtransport_forward(session, state_cl).await;
+                                        //     }
+                                        //     conn.close(0u32.into(), b"");
+                                        //     return;
+                                        // }
 
                                         // CLI / raw QUIC path
+                                        info!("Received incoming QUIC connection");
                                         let _ = handle_quic_connection(conn.clone(), state_cl).await;
                                         conn.close(0u32.into(), b"");
 
@@ -90,24 +92,25 @@ pub async fn run_quic_endpoint(
     }
 }
 
-async fn extract_token(conn: &quinn::Connection) -> Option<String> {
-    // Stream 0 is typically the first opened stream from the client
-    let stream = conn.accept_bi().await.ok()?;
-    let (_send, mut recv) = stream;
+pub async fn extract_token(conn: &quinn::Connection) -> Option<String> {
+    // Wait for Stream 0 (first client-initiated bi-stream)
+    let (mut send, mut recv) = conn.accept_bi().await.ok()?;
 
-    // read token length (u16 BE)
+    // Read token length (u16 BE)
     let mut len_buf = [0u8; 2];
-    if recv.read_exact(&mut len_buf).await.is_err() {
-        return None;
-    }
+    recv.read_exact(&mut len_buf).await.ok()?;
     let len = u16::from_be_bytes(len_buf) as usize;
 
-    // read token bytes
+    // Read token
     let mut buf = vec![0u8; len];
-    if recv.read_exact(&mut buf).await.is_err() {
-        return None;
-    }
+    recv.read_exact(&mut buf).await.ok()?;
 
+    // Send ACK to client so it knows server received everything
+    let ack = [1u8];
+    send.write_all(&ack).await.ok()?;
+    send.finish().ok()?; // Finish server send side
+
+    // Convert to UTF-8 string
     String::from_utf8(buf).ok()
 }
 
@@ -122,7 +125,7 @@ async fn handle_quic_connection(conn: quinn::Connection, state: AppState) -> Ser
         .unwrap_or_default();
 
     let public = &state.config.public_address;
-
+    info!("extracting token");
     let Some(token) = extract_token(&conn).await else {
         conn.close(0x100u32.into(), b"missing-token");
         return Err(ServerError::missing_token("missing api key or token"));
@@ -152,6 +155,7 @@ async fn handle_quic_connection(conn: quinn::Connection, state: AppState) -> Ser
             let _ = handle_forward(ClientConn::Raw(conn), device_conn).await;
         } else {
             warn!(%device_id, "no tunnel registered for device");
+            // print all tunnel ids
             conn.close(0u32.into(), b"No tunnel");
         }
         return Ok(());
@@ -221,59 +225,58 @@ async fn handle_control_tunnel(
     state.relay.remove_tunnel(&device_id).await;
     state.relay.register_tunnel(&device_id, conn.clone()).await;
 
-    tokio::spawn(async move {
-        let reason = conn.closed().await;
+    let reason = conn.closed().await;
 
-        match reason {
-            // --- GRACEFUL SHUTDOWN (no reconnect expected) ---
-            ConnectionError::ApplicationClosed(_) => {
-                state.relay.remove_tunnel(&device_id).await;
-                info!(%device_id, "device gracefully closed");
-            }
-            ConnectionError::ConnectionClosed(_) => {
-                state.relay.remove_tunnel(&device_id).await;
-                warn!(%device_id, "device QUIC stack closed connection");
-            }
-
-            ConnectionError::LocallyClosed => {
-                state.relay.remove_tunnel(&device_id).await;
-                info!(%device_id, "connection closed locally");
-            }
-
-            ConnectionError::Reset => {
-                // peer reset = intentional/terminal
-                state.relay.remove_tunnel(&device_id).await;
-                warn!(%device_id, "connection reset by peer");
-            }
-
-            ConnectionError::TransportError(err) => {
-                warn!(%device_id, "device QUIC stack error: {}", err);
-            }
-
-            // --- UNINTENTIONAL LOSS (reconnect expected) ---
-            ConnectionError::TimedOut => {
-                warn!(%device_id, "device lost connection; waiting for reconnect");
-                state.relay.mark_tunnel_lost(&device_id).await;
-
-                let relay2 = state.relay.clone();
-                let device_id2 = device_id.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-
-                    if relay2.is_still_lost(&device_id2).await {
-                        relay2.remove_tunnel(&device_id2).await;
-                        warn!(%device_id2, "device did not reconnect — marking offline");
-                    }
-                });
-            }
-
-            // --- EXTREMELY RARE / CONFIG ERRORS ---
-            ConnectionError::VersionMismatch | ConnectionError::CidsExhausted => {
-                state.relay.remove_tunnel(&device_id).await;
-                warn!(%device_id, ?reason, "fatal QUIC error");
-            }
+    match reason {
+        // --- GRACEFUL SHUTDOWN (no reconnect expected) ---
+        ConnectionError::ApplicationClosed(_) => {
+            // state.relay.remove_tunnel(&device_id).await;
+            info!(%device_id, "device gracefully closed");
         }
-    });
+        ConnectionError::ConnectionClosed(_) => {
+            // state.relay.remove_tunnel(&device_id).await;
+            warn!(%device_id, "device QUIC stack closed connection");
+        }
+
+        ConnectionError::LocallyClosed => {
+            // state.relay.remove_tunnel(&device_id).await;
+            info!(%device_id, "connection closed locally");
+        }
+
+        ConnectionError::Reset => {
+            // peer reset = intentional/terminal
+            // state.relay.remove_tunnel(&device_id).await;
+            warn!(%device_id, "connection reset by peer");
+        }
+
+        ConnectionError::TransportError(err) => {
+            warn!(%device_id, "device QUIC stack error: {}", err);
+        }
+
+        // --- UNINTENTIONAL LOSS (reconnect expected) ---
+        ConnectionError::TimedOut => {
+            warn!(%device_id, "device lost connection; waiting for reconnect");
+            // state.relay.mark_tunnel_lost(&device_id).await;
+
+            // let relay2 = state.relay.clone();
+            // let device_id2 = device_id.clone();
+            // tokio::spawn(async move {
+            //     tokio::time::sleep(Duration::from_secs(30)).await;
+
+            //     if relay2.is_still_lost(&device_id2).await {
+            //         relay2.remove_tunnel(&device_id2).await;
+            //         warn!(%device_id2, "device did not reconnect — marking offline");
+            //     }
+            // });
+        }
+
+        // --- EXTREMELY RARE / CONFIG ERRORS ---
+        ConnectionError::VersionMismatch | ConnectionError::CidsExhausted => {
+            // state.relay.remove_tunnel(&device_id).await;
+            warn!(%device_id, ?reason, "fatal QUIC error");
+        }
+    }
+    state.relay.remove_tunnel(&device_id).await;
 
     Ok(())
 }
@@ -370,67 +373,66 @@ async fn handle_forward(
     client_conn: ClientConn,        // forward client (CLI/browser)
     device_conn: quinn::Connection, // control-registered device conn
 ) -> io::Result<()> {
-    debug!("handle_forward: waiting for client stream");
+    debug!("handle_forward: starting accept loop");
 
-    // 1. Accept the client's first bidi stream
-    let (mut client_send, mut client_recv) = match client_conn.accept_bi().await {
-        Ok(s) => {
-            debug!("handle_forward: accepted client bidi stream");
-            s
-        }
-        Err(e) => {
-            warn!("handle_forward: client accept_bi failed: {e:?}");
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("client_bi: {e:?}"),
-            ));
-        }
-    };
-
-    debug!("handle_forward: opening stream to device");
-
-    // 2. Open a bidi stream to the device
-    let (mut dev_send, mut dev_recv) = match device_conn.open_bi().await {
-        Ok(s) => {
-            debug!("handle_forward: opened device bidi stream");
-            s
-        }
-        Err(e) => {
-            warn!("handle_forward: device open_bi failed: {e:?}");
-            let _ = client_send.write_all(b"NO_TUNNEL").await;
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                format!("device_bi: {e:?}"),
-            ));
-        }
-    };
-
-    debug!("handle_forward: starting bidirectional copy");
-
-    // 3. Copy both directions simultaneously
-    let uplink = tokio::io::copy(&mut client_recv, &mut dev_send); // client → device
-    let downlink = tokio::io::copy(&mut dev_recv, &mut client_send); // device → client
-
-    // 4. Whichever side closes first, we gracefully finish the opposite send stream
-    tokio::select! {
-        result = uplink => {
-            let _ = dev_send.finish();
-            match &result {
-                Ok(bytes) => debug!(bytes, "handle_forward: uplink finished"),
-                Err(e) => warn!("handle_forward: uplink error: {e:?}"),
+    loop {
+        // 1. Accept the next client bidi stream
+        let (mut client_send, mut client_recv) = match client_conn.accept_bi().await {
+            Ok(s) => {
+                debug!("handle_forward: accepted client bidi stream");
+                s
             }
-            result?;
-        }
-        result = downlink => {
-            let _ = client_send.shutdown();
-            match &result {
-                Ok(bytes) => debug!(bytes, "handle_forward: downlink finished"),
-                Err(e) => warn!("handle_forward: downlink error: {e:?}"),
+            Err(e) => {
+                warn!("handle_forward: client accept_bi failed: {e:?}");
+                // connection is probably closing; exit the loop and end handler
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("client_bi: {e:?}"),
+                ));
             }
-            result?;
-        }
+        };
+
+        let dev_conn = device_conn.clone();
+
+        // 2. Spawn a task to pair this client stream with a device stream
+        tokio::spawn(async move {
+            debug!("handle_forward: opening stream to device");
+
+            let (mut dev_send, mut dev_recv) = match dev_conn.open_bi().await {
+                Ok(s) => {
+                    debug!("handle_forward: opened device bidi stream");
+                    s
+                }
+                Err(e) => {
+                    warn!("handle_forward: device open_bi failed: {e:?}");
+                    let _ = client_send.write_all(b"NO_TUNNEL").await;
+                    return;
+                }
+            };
+
+            debug!("handle_forward: starting bidirectional copy");
+
+            let uplink = tokio::io::copy(&mut client_recv, &mut dev_send); // client → device
+            let downlink = tokio::io::copy(&mut dev_recv, &mut client_send); // device → client
+
+            tokio::select! {
+                result = uplink => {
+                    let _ = dev_send.finish();
+                    match &result {
+                        Ok(bytes) => debug!(bytes, "handle_forward: uplink finished"),
+                        Err(e) => warn!("handle_forward: uplink error: {e:?}"),
+                    }
+                }
+                result = downlink => {
+                    let _ = client_send.shutdown();
+                    match &result {
+                        Ok(bytes) => debug!(bytes, "handle_forward: downlink finished"),
+                        Err(e) => warn!("handle_forward: downlink error: {e:?}"),
+                    }
+                }
+            }
+
+            debug!("handle_forward: stream bridge complete");
+        });
     }
-
-    debug!("handle_forward: complete");
-    Ok(())
 }

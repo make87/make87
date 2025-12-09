@@ -9,48 +9,87 @@ use m87_shared::metrics::SystemMetrics;
 
 use ratatui::Terminal;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tracing::error;
 
 pub async fn run_metrics(device: &str) -> Result<()> {
+    let result = run_metrics_inner(device).await;
+
+    // ensure alternate screen is closed
+    println!("{}", termion::screen::ToMainScreen);
+
+    if let Err(ref e) = result {
+        tracing::error!("Error: {e:?}");
+    }
+
+    result
+}
+
+async fn run_metrics_inner(device: &str) -> Result<()> {
     let config = Config::load()?;
     let host = config.get_server_hostname();
-
     let dev = devices::get_device_by_name(device).await?;
     let token = AuthManager::get_cli_token().await?;
 
     let stream_type = StreamType::Metrics {
-        token: token.to_string(),
+        token: token.clone(),
     };
-    let (_, io) = open_quic_io(
+
+    let (conn, io) = open_quic_io(
         &host,
         &token,
         &dev.short_id,
         stream_type,
         config.trust_invalid_server_cert,
     )
-    .await
-    .context("Failed to connect to RAW metrics stream")?;
+    .await?;
 
-    // Read line-delimited JSON
+    // spawn metrics reader
     let reader = BufReader::new(io);
     let mut lines = reader.lines();
 
-    // Channel to feed UI
-    let (tx, rx) = tokio::sync::mpsc::channel::<SystemMetrics>(32);
+    let (tx, rx) = tokio::sync::mpsc::channel(128);
 
-    tokio::spawn(async move {
+    let reader_task = tokio::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(parsed) = serde_json::from_str::<SystemMetrics>(&line) {
-                let _ = tx.send(parsed).await;
+            match serde_json::from_str::<SystemMetrics>(&line) {
+                Ok(m) => {
+                    let _ = tx.send(m).await;
+                }
+                Err(e) => {
+                    tracing::warn!("Bad metrics JSON: {}", e);
+                }
             }
         }
     });
 
-    ui_loop(rx).await.map_err(|e| anyhow!("{:?}", e))?;
+    // spawn UI loop
+    let ui_task = tokio::spawn(async move {
+        if let Err(e) = ui_loop(rx).await {
+            tracing::error!("UI loop exited: {}", e);
+        }
+    });
 
-    Ok(())
+    // monitor connection + reader
+    tokio::select! {
+        reason = conn.closed() => {
+            tracing::error!("QUIC connection closed: {:?}", reason);
+            return Err(anyhow!("QUIC connection closed: {:?}", reason));
+        }
+
+        _ = reader_task => {
+            tracing::error!("Metrics stream ended");
+            return Err(anyhow!("Metrics stream ended"));
+        }
+
+        // UI exit: just quit normally
+        _ = ui_task => {
+
+            return Ok(());
+        }
+    }
 }
 
 pub async fn ui_loop(

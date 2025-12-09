@@ -292,8 +292,12 @@ pub async fn register_device(
         api_url = Some(resolved_api.clone());
         owner_scope = Some(resolved_owner.clone());
 
-        config.api_url = Some(resolved_api);
-        config.owner_reference = Some(resolved_owner);
+        if config.api_url.is_none() {
+            config.api_url = Some(resolved_api);
+        }
+        if config.owner_reference.is_none() {
+            config.owner_reference = Some(resolved_owner);
+        }
         config.save()?;
     }
 

@@ -1,7 +1,5 @@
 use anyhow::bail;
-use chrono::{DateTime, Utc};
 use clap::{CommandFactory, Parser, Subcommand};
-use m87_shared::device::PublicDevice;
 
 use crate::auth;
 use crate::device;
@@ -165,8 +163,13 @@ pub enum DeviceCommand {
     Serial {
         /// path to serial device (e.g., "/dev/ttyUSB0")
         path: String,
-        // Optional baud rate (defaults to 115200)
+        /// Optional baud rate (defaults to 115200)
         baud: Option<u32>,
+    },
+    /// Tunnels the device ssh to a local port
+    Ssh {
+        /// Local port to tunnel to
+        local_port: u16,
     },
 }
 
@@ -300,7 +303,8 @@ pub async fn cli() -> anyhow::Result<()> {
         Commands::Devices(cmd) => match cmd {
             DevicesCommands::List => {
                 let devices = devices::list_devices().await?;
-                print_devices_table(&devices);
+                let requests = devices::list_auth_requests().await?;
+                tui::devices::print_devices_table(&devices, &requests);
             }
             DevicesCommands::Show { device } => {
                 eprintln!("Error: 'devices show' command is not yet implemented");
@@ -426,82 +430,10 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             serial::open_serial(&device, &path, baud).await?;
             Ok(())
         }
+
+        DeviceCommand::Ssh { local_port } => {
+            device::ssh::tunnel_device_ssh(&device, local_port).await?;
+            Ok(())
+        }
     }
-}
-
-/// Print devices in a table format similar to `docker ps`
-fn print_devices_table(devices: &[PublicDevice]) {
-    if devices.is_empty() {
-        println!("No devices found");
-        return;
-    }
-
-    // Print header
-    println!(
-        "{:<11} {:<15} {:<8} {:<7} {:<32} {:<15} {}",
-        "DEVICE ID", "NAME", "STATUS", "ARCH", "OS", "IP", "LAST SEEN"
-    );
-
-    for dev in devices {
-        let status = if dev.online { "online" } else { "offline" };
-        let os = truncate_str(&dev.system_info.operating_system, 30);
-        let ip = dev.system_info.public_ip_address.as_deref().unwrap_or("-");
-        let last_seen = format_relative_time(&dev.last_connection);
-
-        println!(
-            "{:<11} {:<15} {:<8} {:<7} {:<32} {:<15} {}",
-            dev.short_id, dev.name, status, dev.system_info.architecture, os, ip, last_seen
-        );
-    }
-}
-
-/// Truncate a string to max length, adding "..." if truncated
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() > max {
-        format!("{}...", s.chars().take(max - 3).collect::<String>())
-    } else {
-        s.to_string()
-    }
-}
-
-/// Format an ISO timestamp as relative time (e.g., "2 min ago", "3 days ago")
-fn format_relative_time(iso_time: &str) -> String {
-    let Ok(time) = iso_time.parse::<DateTime<Utc>>() else {
-        return iso_time.to_string();
-    };
-
-    let now = Utc::now();
-    let duration = now.signed_duration_since(time);
-
-    let secs = duration.num_seconds();
-    if secs < 0 {
-        return "just now".to_string();
-    }
-
-    if secs < 60 {
-        return format!("{} sec ago", secs);
-    }
-
-    let mins = duration.num_minutes();
-    if mins < 60 {
-        return format!("{} min ago", mins);
-    }
-
-    let hours = duration.num_hours();
-    if hours < 24 {
-        return format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" });
-    }
-
-    let days = duration.num_days();
-    if days < 30 {
-        return format!("{} day{} ago", days, if days == 1 { "" } else { "s" });
-    }
-
-    let months = days / 30;
-    if months < 12 {
-        return format!("{} month{} ago", months, if months == 1 { "" } else { "s" });
-    }
-
-    let years = days / 365;
-    format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
 }
