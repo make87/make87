@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use m87_shared::roles::Role;
 use mongodb::bson::doc;
+use quinn::crypto::rustls::HandshakeData;
 use quinn::{ConnectionError, Endpoint};
 use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
@@ -54,21 +55,28 @@ pub async fn run_quic_endpoint(
                             tokio::spawn(async move {
                                 match incoming_conn.await {
                                     Ok(conn) => {
+                                        let alpn = conn.handshake_data()
+                                            .and_then(|d| {
+                                                d.downcast_ref::<HandshakeData>()
+                                                    .and_then(|h| h.protocol.clone())
+                                            })
+                                            .unwrap_or_else(|| Vec::new());
+                                        if alpn == b"h3" {
+                                            // WebTransport candidate
+                                            if let Ok(req) = web_transport_quinn::Request::accept(conn.clone()).await {
+                                                if let Ok(session) = req.ok().await {
+                                                    let _ = handle_webtransport_forward(session, state_cl).await;
+                                                    return;
+                                                }
+                                            }
+                                            // If WT parsing fails → close quickly, do NOT fall back
+                                            conn.close(0u32.into(), b"invalid-wt");
+                                            return;
+                                        }
 
-                                        // if let Ok(req) = web_transport_quinn::Request::accept(conn.clone()).await {
-                                        //     // browser path
-                                        //     if let Ok(session) = req.ok().await {
-                                        //         let _ = handle_webtransport_forward(session, state_cl).await;
-                                        //     }
-                                        //     conn.close(0u32.into(), b"");
-                                        //     return;
-                                        // }
-
-                                        // CLI / raw QUIC path
-                                        info!("Received incoming QUIC connection");
+                                        // Raw QUIC path (CLI, tunnels, forwards)
                                         let _ = handle_quic_connection(conn.clone(), state_cl).await;
                                         conn.close(0u32.into(), b"");
-
                                     }
                                     Err(e) => {
                                         warn!("Incoming QUIC handshake failed: {e:?}");
