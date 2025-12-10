@@ -32,7 +32,7 @@ async fn main() -> ServerResult<()> {
     db.ensure_indexes().await?;
     let config = Arc::new(config);
     // Shared relay state
-    let relay_state = Arc::new(RelayState::new()?);
+    let relay_state = Arc::new(RelayState::new());
 
     info!("server started");
     if let Err(e) = api::serve::serve(db, relay_state, config).await {

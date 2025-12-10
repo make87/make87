@@ -39,6 +39,8 @@ pem = "3.0.6"
 quinn.workspace = true
 quinn-proto.workspace = true
 web-transport-quinn = "0.10.1"
+# for rate limiting
+governor = "0.10.2"
 
 
 # Server-specific serialization
@@ -58,3 +60,4 @@ argon2 = "0.5"
 
 # Server-specific utilities
 uuid = "1.18.1"
+bytes = "1.11.0"

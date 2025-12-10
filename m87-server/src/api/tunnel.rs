@@ -1,13 +1,15 @@
-// tunnel.rs
-
-use std::net::SocketAddr;
-use std::pin::Pin;
-use std::time::Duration;
-
+use bytes::Bytes;
+use futures::future::{AbortHandle, Abortable};
+use governor::{Quota, RateLimiter};
 use m87_shared::roles::Role;
 use mongodb::bson::doc;
 use quinn::crypto::rustls::HandshakeData;
 use quinn::{ConnectionError, Endpoint};
+use std::net::SocketAddr;
+use std::num::NonZeroU32;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{self, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
@@ -158,9 +160,11 @@ async fn handle_quic_connection(conn: quinn::Connection, state: AppState) -> Ser
             .await?
             .ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-        if let Some(device_conn) = state.relay.get_tunnel(&device_id).await {
+        if state.relay.has_tunnel(&device_id).await {
             debug!(%device_id, "forwarding to device");
-            let _ = handle_forward(ClientConn::Raw(conn), device_conn).await;
+            let _ =
+                handle_forward_supervised(ClientConn::Raw(conn), device_id.clone(), state.clone())
+                    .await;
         } else {
             warn!(%device_id, "no tunnel registered for device");
             // print all tunnel ids
@@ -215,13 +219,10 @@ async fn handle_control_tunnel(
     claims: Claims,
     state: AppState,
 ) -> ServerResult<()> {
-    // node has editor permissions to itself
-    debug!(
-        "handle_control_tunnel: device_short_id = {}",
-        device_short_id
-    );
     let device_id = device_short_id.to_string();
-    let _ = claims
+
+    // Permission check
+    claims
         .find_one_with_scope_and_role::<DeviceDoc>(
             &state.db.devices(),
             doc! { "short_id": &device_id },
@@ -230,61 +231,41 @@ async fn handle_control_tunnel(
         .await?
         .ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    state.relay.remove_tunnel(&device_id).await;
-    state.relay.register_tunnel(&device_id, conn.clone()).await;
+    // Atomically replace any existing tunnel
+    state.relay.replace_tunnel(&device_id, conn.clone()).await;
 
+    // Wait until fully closed
     let reason = conn.closed().await;
 
     match reason {
-        // --- GRACEFUL SHUTDOWN (no reconnect expected) ---
         ConnectionError::ApplicationClosed(_) => {
-            // state.relay.remove_tunnel(&device_id).await;
             info!(%device_id, "device gracefully closed");
         }
         ConnectionError::ConnectionClosed(_) => {
-            // state.relay.remove_tunnel(&device_id).await;
-            warn!(%device_id, "device QUIC stack closed connection");
+            warn!(%device_id, "device closed connection");
         }
-
         ConnectionError::LocallyClosed => {
-            // state.relay.remove_tunnel(&device_id).await;
-            info!(%device_id, "connection closed locally");
+            info!(%device_id, "we closed connection locally");
         }
-
         ConnectionError::Reset => {
-            // peer reset = intentional/terminal
-            // state.relay.remove_tunnel(&device_id).await;
             warn!(%device_id, "connection reset by peer");
         }
-
         ConnectionError::TransportError(err) => {
-            warn!(%device_id, "device QUIC stack error: {}", err);
+            warn!(%device_id, "transport error: {}", err);
         }
-
-        // --- UNINTENTIONAL LOSS (reconnect expected) ---
         ConnectionError::TimedOut => {
-            warn!(%device_id, "device lost connection; waiting for reconnect");
-            // state.relay.mark_tunnel_lost(&device_id).await;
-
-            // let relay2 = state.relay.clone();
-            // let device_id2 = device_id.clone();
-            // tokio::spawn(async move {
-            //     tokio::time::sleep(Duration::from_secs(30)).await;
-
-            //     if relay2.is_still_lost(&device_id2).await {
-            //         relay2.remove_tunnel(&device_id2).await;
-            //         warn!(%device_id2, "device did not reconnect — marking offline");
-            //     }
-            // });
+            warn!(%device_id, "device timed out");
         }
-
-        // --- EXTREMELY RARE / CONFIG ERRORS ---
         ConnectionError::VersionMismatch | ConnectionError::CidsExhausted => {
-            // state.relay.remove_tunnel(&device_id).await;
             warn!(%device_id, ?reason, "fatal QUIC error");
         }
     }
-    state.relay.remove_tunnel(&device_id).await;
+
+    // Clean up only if the closed conn is still the active tunnel
+    state
+        .relay
+        .remove_if_match(&device_id, conn.stable_id())
+        .await;
 
     Ok(())
 }
@@ -333,12 +314,18 @@ pub async fn handle_webtransport_forward(
         .await?
         .ok_or_else(|| ServerError::not_found("device not found"))?;
 
-    let Some(device_conn) = state.relay.get_tunnel(&device_id).await else {
+    if !state.relay.has_tunnel(&device_id).await {
         return Err(ServerError::not_found("device tunnel not connected"));
     };
     let fut_session = session.clone();
     tokio::spawn(async move {
-        if let Err(e) = handle_forward(ClientConn::Web(fut_session), device_conn).await {
+        if let Err(e) = handle_forward_supervised(
+            ClientConn::Web(fut_session),
+            device_id.clone(),
+            state.clone(),
+        )
+        .await
+        {
             warn!(%device_id, "WT forward error: {:?}", e);
         }
     });
@@ -375,72 +362,280 @@ impl ClientConn {
             }
         }
     }
+
+    pub fn send_datagram(&self, data: Bytes) -> io::Result<()> {
+        match self {
+            ClientConn::Raw(conn) => conn
+                .send_datagram(data.into())
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)),
+            ClientConn::Web(session) => session
+                .send_datagram(data.into())
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)),
+        }
+    }
+
+    pub async fn read_datagram(&self) -> io::Result<Bytes> {
+        match self {
+            ClientConn::Raw(conn) => conn
+                .read_datagram()
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)),
+            ClientConn::Web(session) => session
+                .read_datagram()
+                .await
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e)),
+        }
+    }
+
+    pub async fn closed(&self) {
+        match self {
+            ClientConn::Raw(conn) => {
+                let _ = conn.closed().await;
+            }
+            ClientConn::Web(session) => {
+                // adjust if the actual API name differs
+                let _ = session.closed().await;
+            }
+        }
+    }
 }
 
-async fn handle_forward(
-    client_conn: ClientConn,        // forward client (CLI/browser)
-    device_conn: quinn::Connection, // control-registered device conn
+enum ForwardEnd {
+    ClientClosed,
+    DeviceClosed,
+}
+
+async fn wait_for_device_conn(
+    state: &AppState,
+    device_id: &str,
+    timeout: Duration,
+) -> Option<quinn::Connection> {
+    let start = Instant::now();
+    loop {
+        if let Some(conn) = state.relay.get_tunnel(device_id).await {
+            return Some(conn);
+        }
+        if start.elapsed() >= timeout {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn handle_forward_supervised(
+    client_conn: ClientConn,
+    device_id: String,
+    state: AppState,
 ) -> io::Result<()> {
-    debug!("handle_forward: starting accept loop");
+    const RECONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
     loop {
-        // 1. Accept the next client bidi stream
-        let (mut client_send, mut client_recv) = match client_conn.accept_bi().await {
-            Ok(s) => {
-                debug!("handle_forward: accepted client bidi stream");
-                s
-            }
-            Err(e) => {
-                warn!("handle_forward: client accept_bi failed: {e:?}");
-                // connection is probably closing; exit the loop and end handler
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("client_bi: {e:?}"),
-                ));
-            }
+        // wait (with timeout) for a device tunnel
+        let Some(device_conn) = wait_for_device_conn(&state, &device_id, RECONNECT_TIMEOUT).await
+        else {
+            warn!(%device_id, "device did not reconnect within timeout, closing forward");
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "device did not reconnect in time",
+            ));
         };
 
-        let dev_conn = device_conn.clone();
+        debug!(%device_id, "starting forward session");
+        match handle_forward_once(&client_conn, &device_conn, &device_id).await {
+            ForwardEnd::ClientClosed => {
+                debug!(%device_id, "client closed, ending supervised forward");
+                return Ok(());
+            }
+            ForwardEnd::DeviceClosed => {
+                warn!(%device_id, "device tunnel closed, waiting for reconnect");
+                // loop again → wait_for_device_conn()
+            }
+        }
+    }
+}
 
-        // 2. Spawn a task to pair this client stream with a device stream
-        tokio::spawn(async move {
-            debug!("handle_forward: opening stream to device");
+const MAX_PARALLEL_STREAMS: usize = 128;
 
-            let (mut dev_send, mut dev_recv) = match dev_conn.open_bi().await {
-                Ok(s) => {
-                    debug!("handle_forward: opened device bidi stream");
-                    s
-                }
-                Err(e) => {
-                    warn!("handle_forward: device open_bi failed: {e:?}");
-                    let _ = client_send.write_all(b"NO_TUNNEL").await;
-                    return;
-                }
-            };
+async fn handle_forward_once(
+    client_conn: &ClientConn,
+    device_conn: &quinn::Connection,
+    device_id: &str,
+) -> ForwardEnd {
+    let active_streams = Arc::new(tokio::sync::Semaphore::new(MAX_PARALLEL_STREAMS));
 
-            debug!("handle_forward: starting bidirectional copy");
+    spawn_udp_bridge(
+        client_conn.clone(),
+        device_conn.clone(),
+        device_id.to_string(),
+    );
 
-            let uplink = tokio::io::copy(&mut client_recv, &mut dev_send); // client → device
-            let downlink = tokio::io::copy(&mut dev_recv, &mut client_send); // device → client
+    let client_closed_fut = client_conn.closed();
+    tokio::pin!(client_closed_fut);
 
-            tokio::select! {
-                result = uplink => {
-                    let _ = dev_send.finish();
-                    match &result {
-                        Ok(bytes) => debug!(bytes, "handle_forward: uplink finished"),
-                        Err(e) => warn!("handle_forward: uplink error: {e:?}"),
-                    }
-                }
-                result = downlink => {
-                    let _ = client_send.shutdown();
-                    match &result {
-                        Ok(bytes) => debug!(bytes, "handle_forward: downlink finished"),
-                        Err(e) => warn!("handle_forward: downlink error: {e:?}"),
-                    }
-                }
+    let device_closed_fut = device_conn.closed();
+    tokio::pin!(device_closed_fut);
+
+    debug!("handle_forward_once: starting");
+
+    loop {
+        tokio::select! {
+
+            _ = &mut client_closed_fut => {
+                debug!("handle_forward_once: client closed");
+                return ForwardEnd::ClientClosed;
             }
 
-            debug!("handle_forward: stream bridge complete");
+            _ = &mut device_closed_fut => {
+                warn!("handle_forward_once: device connection closed");
+                return ForwardEnd::DeviceClosed;
+            }
+
+            client_bi = client_conn.accept_bi() => {
+                // Acquire a stream slot
+                let permit = match active_streams.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("too many parallel streams; rejecting new stream");
+                        continue;
+                    }
+                };
+
+                let (mut client_send, mut client_recv) = match client_bi {
+                    Ok(s) => s,
+                    Err(e) => {
+                        warn!("client accept_bi failed: {e:?}");
+                        return ForwardEnd::ClientClosed;
+                    }
+                };
+
+                let dev_conn = device_conn.clone();
+                let device_id = device_id.to_string();
+
+                tokio::spawn(async move {
+                    let _permit = permit;
+
+                    debug!("forward: opening device stream");
+
+                    let (mut dev_send, mut dev_recv) = match dev_conn.open_bi().await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("device open_bi failed: {e:?}");
+                            let _ = client_send.write_all(b"NO_TUNNEL").await;
+                            return;
+                        }
+                    };
+
+                    let (abort_uplink, reg_up) = AbortHandle::new_pair();
+                    let (abort_down, reg_dn) = AbortHandle::new_pair();
+
+                    let uplink = tokio::spawn(Abortable::new(async move {
+                        let r = tokio::io::copy(&mut client_recv, &mut dev_send).await;
+                        let _ = dev_send.finish();
+                        r
+                    }, reg_up));
+
+                    let downlink = tokio::spawn(Abortable::new(async move {
+                        let r = tokio::io::copy(&mut dev_recv, &mut client_send).await;
+                        let _ = client_send.shutdown().await;
+                        r
+                    }, reg_dn));
+
+                    tokio::select! {
+                        _ = uplink => {
+                            abort_down.abort();
+                        }
+                        _ = downlink => {
+                            abort_uplink.abort();
+                        }
+                    }
+
+                    debug!(%device_id, "stream bridge complete");
+                });
+            }
+        }
+    }
+}
+
+const MAX_UDP_PAYLOAD: usize = 64 * 1024;
+const UDP_SEND_BACKOFF: Duration = Duration::from_millis(1);
+
+fn spawn_udp_bridge(client: ClientConn, device: quinn::Connection, device_id: String) {
+    // CLIENT → DEVICE
+    {
+        let client = client.clone();
+        let device = device.clone();
+        let dev_id = device_id.clone();
+
+        // REAL, ACTIVE RATE LIMITER
+        let udp_limiter = Arc::new(RateLimiter::direct(
+            Quota::per_second(NonZeroU32::new(50_000).unwrap()), // 50k packets/s
+        ));
+
+        tokio::spawn(async move {
+            loop {
+                let d = match client.read_datagram().await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        debug!(%dev_id, "udp client->device read_end: {e:?}");
+                        break;
+                    }
+                };
+
+                if d.len() > MAX_UDP_PAYLOAD {
+                    warn!(%dev_id, len = d.len(), "udp datagram too large, dropping");
+                    continue;
+                }
+
+                // ACTUAL RATE LIMITING
+                if udp_limiter.check().is_err() {
+                    // drop packet; do not queue → prevents memory blowup
+                    warn!(%dev_id, "udp client->device rate limit exceeded, dropping");
+                    continue;
+                }
+
+                if let Err(e) = device.send_datagram(d) {
+                    warn!(%dev_id, "udp client->device send error: {e:?}");
+                    tokio::time::sleep(UDP_SEND_BACKOFF).await;
+                }
+            }
+        });
+    }
+
+    // DEVICE → CLIENT
+    {
+        let client = client.clone();
+        let device = device.clone();
+        let dev_id = device_id.clone();
+
+        let udp_limiter = Arc::new(RateLimiter::direct(Quota::per_second(
+            NonZeroU32::new(50_000).unwrap(),
+        )));
+
+        tokio::spawn(async move {
+            loop {
+                let d = match device.read_datagram().await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        debug!(%dev_id, "udp device->client read_end: {e:?}");
+                        break;
+                    }
+                };
+
+                if d.len() > MAX_UDP_PAYLOAD {
+                    warn!(%dev_id, len = d.len(), "udp datagram too large, dropping");
+                    continue;
+                }
+
+                if udp_limiter.check().is_err() {
+                    warn!(%dev_id, "udp device->client rate limit exceeded, dropping");
+                    continue;
+                }
+
+                if let Err(e) = client.send_datagram(d) {
+                    warn!(%dev_id, "udp device->client send error: {e:?}");
+                    tokio::time::sleep(UDP_SEND_BACKOFF).await;
+                }
+            }
         });
     }
 }

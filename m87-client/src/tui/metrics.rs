@@ -4,12 +4,11 @@ use crate::{
     devices,
     streams::{quic::open_quic_io, stream_type::StreamType},
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use m87_shared::metrics::SystemMetrics;
 
 use ratatui::Terminal;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tracing::error;
 
 pub async fn run_metrics(device: &str) -> Result<()> {
     let result = run_metrics_inner(device).await;
