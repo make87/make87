@@ -260,73 +260,125 @@ pub async fn report_device_details(
 // Agent-specific: Maintain persistent control tunnel connection
 #[cfg(feature = "agent")]
 pub async fn connect_control_tunnel() -> Result<()> {
+    use crate::streams::quic::get_quic_connection;
+    use crate::streams::udp_manager::UdpChannelManager;
+    use bytes::{BufMut, Bytes, BytesMut};
     use m87_shared::device::short_device_id;
     use quinn::Connection;
-    use tracing::debug;
-
-    use crate::streams::quic::get_quic_connection;
+    use tracing::{debug, warn};
 
     let config = Config::load().context("Failed to load configuration")?;
     let token = AuthManager::get_device_token()?;
-    let device_id = config.device_id.clone();
-    let short_id = short_device_id(&device_id);
+    let short_id = short_device_id(&config.device_id);
 
     let control_host = format!("control-{}.{}", short_id, config.get_server_hostname());
-    debug!(
-        "Connecting QUIC control tunnel to {} (short_id={})",
-        control_host, short_id
-    );
+    debug!("Connecting QUIC control tunnel to {}", control_host);
 
     let (_endpoint, quic_conn): (_, Connection) =
         get_quic_connection(&control_host, &token, config.trust_invalid_server_cert)
             .await
             .context("QUIC connect failed")?;
 
+    // === CENTRAL STATE ===
+    let udp_channels = UdpChannelManager::new();
+
+    // === DATAGRAM OUTPUT PIPE (workers → QUIC) ===
+    let (datagram_tx, mut datagram_rx) = tokio::sync::mpsc::channel::<(u32, Bytes)>(2048);
+
+    // This task frames datagrams and sends via QUIC
+    {
+        let conn = quic_conn.clone();
+        tokio::spawn(async move {
+            while let Some((id, payload)) = datagram_rx.recv().await {
+                let mut buf = BytesMut::with_capacity(4 + payload.len());
+                buf.put_u32(id);
+                buf.extend_from_slice(&payload);
+
+                if let Err(e) = conn.send_datagram(buf.freeze()) {
+                    warn!("send_datagram failed: {:?}", e);
+                    break;
+                }
+            }
+        });
+    }
+
+    // === DATAGRAM INPUT PIPE (QUIC → workers) ===
+    {
+        let udp_channels_clone = udp_channels.clone();
+        let conn_clone = quic_conn.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let d = match conn_clone.read_datagram().await {
+                    Ok(d) => d,
+                    Err(_) => break, // QUIC closed
+                };
+
+                if d.len() < 4 {
+                    continue;
+                }
+
+                let id = u32::from_be_bytes([d[0], d[1], d[2], d[3]]);
+                let payload = Bytes::copy_from_slice(&d[4..]);
+
+                if let Some(ch) = udp_channels_clone.get(id).await {
+                    if ch.sender.send(payload).await.is_err() {
+                        // worker is gone; drop silently
+                    }
+                }
+            }
+
+            // QUIC closed => cleanup all channels
+            udp_channels_clone.remove_all().await;
+        });
+    }
+
+    // === CONTROL STREAM ACCEPT LOOP ===
     loop {
+        use crate::streams::{self, quic::QuicIo};
         use std::time::Duration;
 
-        use crate::streams::{self, quic::QuicIo};
-
         tokio::select! {
+
             incoming = quic_conn.accept_bi() => {
                 match incoming {
-                    Ok((quic_send, quic_recv)) => {
+                    Ok((send, recv)) => {
                         debug!("QUIC: new control stream accepted");
 
-                        let io = QuicIo {
-                            recv: quic_recv,
-                            send: quic_send,
-                        };
+                        let io = QuicIo { recv, send };
+                        let udp_channels_clone = udp_channels.clone();
+                        let datagram_tx_clone = datagram_tx.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = streams::router::handle_incoming_stream(io).await {
-                                warn!("control proxy closed with error: {e:?}");
+                            if let Err(e) =
+                                streams::router::handle_incoming_stream(
+                                    io, udp_channels_clone, datagram_tx_clone
+                                ).await
+                            {
+                                warn!("control stream error: {:?}", e);
                             }
                         });
                     }
+
                     Err(e) => {
-                        warn!(error = ?e, "Control QUIC stream accept failed — reconnect required");
-
-                        if let Some(reason) = quic_conn.close_reason() {
-                            warn!(?reason, "Control QUIC connection close reason");
-                        }
-
+                        warn!("Control accept failed: {:?}", e);
                         break;
                     }
                 }
             }
 
+            // QUIC connection closed
             _ = quic_conn.closed() => {
-                if let Some(reason) = quic_conn.close_reason() {
-                    warn!(?reason, "QUIC control connection closed by peer");
-                } else {
-                    warn!("QUIC control connection closed by peer");
-                }
+                warn!("control tunnel closed by peer");
+                udp_channels.remove_all().await;
                 break;
             }
+
             _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                // Keepalive probe: if this errors out, conn is dead
                 if let Err(e) = quic_conn.open_uni().await {
-                    warn!(?e, "probe failed → connection dead");
+                    warn!("keepalive probe failed, tunnel dead: {:?}", e);
+                    udp_channels.remove_all().await;
                     break;
                 }
             }

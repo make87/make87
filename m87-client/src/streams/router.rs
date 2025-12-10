@@ -1,16 +1,22 @@
+use bytes::Bytes;
 use tracing::{debug, warn};
 
 use crate::streams::auth::validate_token;
 use crate::streams::quic::QuicIo;
 use crate::streams::serial::handle_serial_io;
 use crate::streams::stream_type::StreamType;
+use crate::streams::udp_manager::UdpChannelManager;
 use crate::streams::{
     docker::handle_docker_io, exec::handle_exec_io, logs::handle_logs_io,
-    metrics::handle_system_metrics_io, port::handle_port_forward_io, ssh::handle_ssh_io,
-    terminal::handle_terminal_io,
+    metrics::handle_system_metrics_io, ssh::handle_ssh_io, terminal::handle_terminal_io,
+    tunnel::handle_port_forward_io,
 };
 
-pub async fn handle_incoming_stream(mut io: QuicIo) -> anyhow::Result<()> {
+pub async fn handle_incoming_stream(
+    mut io: QuicIo,
+    manager: UdpChannelManager,
+    datagram_tx: tokio::sync::mpsc::Sender<(u32, Bytes)>,
+) -> anyhow::Result<()> {
     debug!("router: parsing stream type header");
     let stream_type = match StreamType::from_incoming_stream(&mut io.recv).await {
         Ok(st) => st,
@@ -22,11 +28,11 @@ pub async fn handle_incoming_stream(mut io: QuicIo) -> anyhow::Result<()> {
 
     debug!("router: stream type = {:?}", stream_type.variant_name());
 
-    let token = stream_type.get_token();
-    if let Err(e) = validate_token(token).await {
-        warn!("router: token validation failed: {e:?}");
-        return Err(e);
-    }
+    // let token = stream_type.get_token();
+    // if let Err(e) = validate_token(token).await {
+    //     warn!("router: token validation failed: {e:?}");
+    //     return Err(e);
+    // }
 
     match stream_type {
         StreamType::Terminal { .. } => {
@@ -41,14 +47,9 @@ pub async fn handle_incoming_stream(mut io: QuicIo) -> anyhow::Result<()> {
             debug!("router: dispatching to logs handler");
             handle_logs_io(&mut io).await;
         }
-        StreamType::Port {
-            port,
-            host,
-            protocol,
-            ..
-        } => {
+        StreamType::Tunnel { target, .. } => {
             debug!("router: dispatching to port forward handler");
-            handle_port_forward_io(port, host, protocol, io).await;
+            handle_port_forward_io(target, io, manager, datagram_tx).await;
         }
         StreamType::Serial { name, baud, .. } => {
             debug!("router: dispatching to serial handler");

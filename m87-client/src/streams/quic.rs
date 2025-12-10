@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
-use quinn::{ClientConfig, Endpoint};
+use quinn::{ClientConfig, Endpoint, IdleTimeout};
 use quinn_proto::crypto::rustls::QuicClientConfig;
 use rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
 use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
 use std::{pin::Pin, task::Poll};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::streams::stream_type::StreamType;
 use crate::util::tls::NoVerify; // reuse the same NoVerify struct
@@ -84,6 +84,9 @@ pub async fn get_quic_connection(
     let mut client_cfg = ClientConfig::new(crypto);
     let mut transport = quinn::TransportConfig::default();
     transport.keep_alive_interval(Some(Duration::from_secs(5)));
+    transport.max_idle_timeout(Some(
+        IdleTimeout::try_from(Duration::from_secs(10)).unwrap(),
+    )); // 10 seconds
     client_cfg.transport_config(Arc::new(transport));
 
     // 6. Create QUIC client endpoint (local ephemeral port)

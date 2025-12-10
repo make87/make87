@@ -1,5 +1,6 @@
 use anyhow::Result;
 use m87_shared::{auth::DeviceAuthRequest, device::PublicDevice};
+use tracing::warn;
 
 use crate::{auth::AuthManager, config::Config, server};
 
@@ -30,5 +31,11 @@ pub async fn get_device_by_name(name: &str) -> Result<PublicDevice> {
         .await?
         .into_iter()
         .find(|d| d.name == name)
+        .map(|d| {
+            if !d.online {
+                warn!("Device '{}' is offline", d.name);
+            }
+            d
+        })
         .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", name))
 }
