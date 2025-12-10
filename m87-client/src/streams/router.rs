@@ -28,11 +28,11 @@ pub async fn handle_incoming_stream(
 
     debug!("router: stream type = {:?}", stream_type.variant_name());
 
-    let token = stream_type.get_token();
-    if let Err(e) = validate_token(token).await {
-        warn!("router: token validation failed: {e:?}");
-        return Err(e);
-    }
+    // let token = stream_type.get_token();
+    // if let Err(e) = validate_token(token).await {
+    //     warn!("router: token validation failed: {e:?}");
+    //     return Err(e);
+    // }
 
     match stream_type {
         StreamType::Terminal { .. } => {
