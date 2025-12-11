@@ -4,6 +4,7 @@ pub mod containers;
 mod device_registration;
 pub mod fixtures;
 pub mod helpers;
+mod fs;
 mod setup;
 mod tunnel;
 

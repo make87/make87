@@ -1,8 +1,13 @@
-use std::process::{Command, Stdio};
-use std::sync::Once;
+use std::process::Stdio;
+use std::sync::OnceLock;
+use tokio::process::Command;
+use tokio::sync::OnceCell;
 
-static BUILD_IMAGES: Once = Once::new();
-static CREATE_NETWORK: Once = Once::new();
+// Use OnceLock for synchronous network creation (doesn't need async)
+static NETWORK_CREATED: OnceLock<Result<(), String>> = OnceLock::new();
+
+// Use tokio's OnceCell for async image building
+static IMAGES_BUILT: OnceCell<Result<(), String>> = OnceCell::const_new();
 
 pub const NETWORK_NAME: &str = "m87-e2e-network";
 pub const SERVER_IMAGE_NAME: &str = "m87-server";
@@ -15,130 +20,141 @@ pub const CLIENT_IMAGE: &str = "m87-client:e2e";
 
 /// Build Docker images for E2E tests (runs once per test run)
 /// Always rebuilds to pick up code changes - Docker layer caching makes this fast when unchanged
-pub fn ensure_images_built() -> Result<(), String> {
-    let mut build_error: Option<String> = None;
+pub async fn ensure_images_built() -> Result<(), String> {
+    let result = IMAGES_BUILT
+        .get_or_init(|| async { build_images().await })
+        .await;
 
-    BUILD_IMAGES.call_once(|| {
-        // Get workspace root (parent of tests/)
-        let workspace_root = std::env::current_dir()
-            .map(|p| p.parent().map(|p| p.to_path_buf()).unwrap_or(p))
-            .unwrap_or_else(|_| std::path::PathBuf::from(".."));
+    result.clone()
+}
 
-        // Build server image
-        tracing::info!("Building {} (Docker cache will speed up if unchanged)...", SERVER_IMAGE);
-        let status = Command::new("docker")
-            .args([
-                "build",
-                "-t",
-                SERVER_IMAGE,
-                "-f",
-                "m87-server/Dockerfile",
-                "--build-arg",
-                "BUILD_PROFILE=release",
-                ".",
-            ])
-            .current_dir(&workspace_root)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status();
+async fn build_images() -> Result<(), String> {
+    // Get workspace root (parent of tests/)
+    let workspace_root = std::env::current_dir()
+        .map(|p| p.parent().map(|p| p.to_path_buf()).unwrap_or(p))
+        .unwrap_or_else(|_| std::path::PathBuf::from(".."));
 
-        match status {
-            Ok(s) if !s.success() => {
-                build_error = Some(format!("Failed to build server image (exit code: {:?})", s.code()));
-                return;
-            }
-            Err(e) => {
-                build_error = Some(format!("Failed to run docker build for server: {}", e));
-                return;
-            }
-            _ => {
-                tracing::info!("Server image built successfully");
-            }
+    // Build server image
+    tracing::info!(
+        "Building {} (Docker cache will speed up if unchanged)...",
+        SERVER_IMAGE
+    );
+    let status = Command::new("docker")
+        .args([
+            "build",
+            "-t",
+            SERVER_IMAGE,
+            "-f",
+            "m87-server/Dockerfile",
+            "--build-arg",
+            "BUILD_PROFILE=release",
+            ".",
+        ])
+        .current_dir(&workspace_root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await;
+
+    match status {
+        Ok(s) if !s.success() => {
+            return Err(format!(
+                "Failed to build server image (exit code: {:?})",
+                s.code()
+            ));
         }
-
-        // Build client image
-        tracing::info!("Building {} (Docker cache will speed up if unchanged)...", CLIENT_IMAGE);
-        let status = Command::new("docker")
-            .args([
-                "build",
-                "-t",
-                CLIENT_IMAGE,
-                "-f",
-                "m87-client/Dockerfile",
-                "--build-arg",
-                "BUILD_PROFILE=release",
-                ".",
-            ])
-            .current_dir(&workspace_root)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .status();
-
-        match status {
-            Ok(s) if !s.success() => {
-                build_error = Some(format!("Failed to build client image (exit code: {:?})", s.code()));
-            }
-            Err(e) => {
-                build_error = Some(format!("Failed to run docker build for client: {}", e));
-            }
-            _ => {
-                tracing::info!("Client image built successfully");
-            }
+        Err(e) => {
+            return Err(format!("Failed to run docker build for server: {}", e));
         }
-    });
-
-    match build_error {
-        Some(e) => Err(e),
-        None => Ok(()),
+        _ => {
+            tracing::info!("Server image built successfully");
+        }
     }
+
+    // Build client image
+    tracing::info!(
+        "Building {} (Docker cache will speed up if unchanged)...",
+        CLIENT_IMAGE
+    );
+    let status = Command::new("docker")
+        .args([
+            "build",
+            "-t",
+            CLIENT_IMAGE,
+            "-f",
+            "m87-client/Dockerfile",
+            "--build-arg",
+            "BUILD_PROFILE=release",
+            ".",
+        ])
+        .current_dir(&workspace_root)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await;
+
+    match status {
+        Ok(s) if !s.success() => {
+            return Err(format!(
+                "Failed to build client image (exit code: {:?})",
+                s.code()
+            ));
+        }
+        Err(e) => {
+            return Err(format!("Failed to run docker build for client: {}", e));
+        }
+        _ => {
+            tracing::info!("Client image built successfully");
+        }
+    }
+
+    Ok(())
 }
 
 /// Create Docker network for container communication (runs once per test run)
 pub fn ensure_network_created() -> Result<(), String> {
-    let mut network_error: Option<String> = None;
+    let result = NETWORK_CREATED.get_or_init(|| create_network());
+    result.clone()
+}
 
-    CREATE_NETWORK.call_once(|| {
-        tracing::info!("Creating E2E Docker network: {}", NETWORK_NAME);
+fn create_network() -> Result<(), String> {
+    tracing::info!("Creating E2E Docker network: {}", NETWORK_NAME);
 
-        // First try to remove existing network (ignore errors)
-        let _ = Command::new("docker")
-            .args(["network", "rm", NETWORK_NAME])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    // First try to remove existing network (ignore errors)
+    let _ = std::process::Command::new("docker")
+        .args(["network", "rm", NETWORK_NAME])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 
-        // Create network
-        let result = Command::new("docker")
-            .args(["network", "create", NETWORK_NAME])
-            .output();
+    // Create network
+    let result = std::process::Command::new("docker")
+        .args(["network", "create", NETWORK_NAME])
+        .output();
 
-        match result {
-            Ok(output) if !output.status.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // Ignore "already exists" error
-                if !stderr.contains("already exists") {
-                    network_error = Some(format!("Failed to create network: {}", stderr));
-                }
-            }
-            Err(e) => {
-                network_error = Some(format!("Failed to run docker network create: {}", e));
-            }
-            _ => {
-                tracing::info!("Docker network created successfully");
+    match result {
+        Ok(output) if !output.status.success() => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Ignore "already exists" error
+            if !stderr.contains("already exists") {
+                return Err(format!("Failed to create network: {}", stderr));
             }
         }
-    });
-
-    match network_error {
-        Some(e) => Err(e),
-        None => Ok(()),
+        Err(e) => {
+            return Err(format!("Failed to run docker network create: {}", e));
+        }
+        _ => {
+            tracing::info!("Docker network created successfully");
+        }
     }
+
+    Ok(())
 }
 
 /// Clean up network after tests (call manually if needed)
 #[allow(dead_code)]
 pub fn cleanup_network() {
-    let _ = Command::new("docker")
+    let _ = std::process::Command::new("docker")
         .args(["network", "rm", NETWORK_NAME])
         .stdout(Stdio::null())
         .stderr(Stdio::null())

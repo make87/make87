@@ -35,7 +35,9 @@ impl E2EInfra {
             .with_env_filter("info")
             .try_init();
 
-        ensure_images_built().map_err(|e| E2EError::Setup(e.to_string()))?;
+        ensure_images_built()
+            .await
+            .map_err(|e| E2EError::Setup(e.to_string()))?;
         ensure_network_created().map_err(|e| E2EError::Setup(e.to_string()))?;
 
         Self::start()
