@@ -5,10 +5,13 @@ use crate::streams::quic::connect_quic_only;
 use crate::streams::quic::open_quic_stream;
 use crate::streams::stream_type::{SocketTarget, TcpTarget, TunnelTarget, UdpTarget};
 use crate::util::shutdown::SHUTDOWN;
+use crate::util::udp::decode_socket_addr;
+use crate::util::udp::encode_socket_addr;
 use crate::{auth::AuthManager, config::Config};
 use anyhow::Result;
 use bytes::BufMut;
 use bytes::BytesMut;
+use serde_json::de;
 use tokio::io;
 use tokio::net::TcpListener;
 use tokio::net::UdpSocket;
@@ -98,14 +101,14 @@ async fn tunnel_device_port_tcp(
 ) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", tunnel_spec.local_port)).await?;
     let remote_host = tunnel_spec.remote_host.clone();
-    debug!(
-        "TCP forward: 127.0.0.1:{} → {}/{}:{}",
-        &tunnel_spec.local_port, device_short_id, remote_host, &tunnel_spec.remote_port
-    );
 
     let (_endpoint, conn) =
         connect_quic_only(host_name, token, device_short_id, trust_invalid_server_cert).await?;
 
+    info!(
+        "TCP forward: 127.0.0.1:{} → {}/{}:{}",
+        &tunnel_spec.local_port, device_short_id, remote_host, &tunnel_spec.remote_port
+    );
     loop {
         tokio::select! {
             accept_result = listener.accept() => {
@@ -121,7 +124,7 @@ async fn tunnel_device_port_tcp(
                     let res = io::copy_bidirectional(&mut local_stream, &mut quic_io).await;
                     match res {
                         Ok((a, b)) =>
-                            info!("TCP forward {addr} closed cleanly (rx={a}, tx={b})"),
+                            debug!("TCP forward {addr} closed cleanly (rx={a}, tx={b})"),
                         Err(e) =>
                             error!("TCP forward {addr} closed with error: {e:?}"),
                     }
@@ -164,16 +167,24 @@ async fn tunnel_device_port_udp(
     quic_io.recv.read_exact(&mut id_buf).await?;
     let channel_id = u32::from_be_bytes(id_buf);
 
-    info!("Opened UDP tunnel with channel ID {}", channel_id);
+    debug!("Opened UDP tunnel with channel ID {}", channel_id);
 
     // Close the control stream – we're done with it
     quic_io.send.finish()?;
+
+    info!(
+        "UDP forward: 127.0.0.1:{} → {} {}:{}",
+        &tunnel_spec.local_port,
+        device_short_id,
+        &tunnel_spec.remote_host,
+        &tunnel_spec.remote_port
+    );
 
     // Now switch to datagram forwarding
     udp_local_datagram_forward(tunnel_spec.local_port, channel_id, conn.clone()).await
 }
 
-async fn udp_local_datagram_forward(
+pub async fn udp_local_datagram_forward(
     local_port: u16,
     channel_id: u32,
     conn: quinn::Connection,
@@ -183,71 +194,89 @@ async fn udp_local_datagram_forward(
     let sock_rx = sock.clone();
     let sock_tx = sock.clone();
     let conn_rx = conn.clone();
+    let conn_cl = conn.clone();
 
     // === UDP -> QUIC ===
     let udp_to_quic = tokio::spawn(async move {
         let mut buf = [0u8; 65535];
+
         loop {
             let (n, src) = match sock_rx.recv_from(&mut buf).await {
                 Ok(r) => r,
                 Err(e) => {
-                    error!("udp recv failed: {:?}", e);
+                    error!("CLI UDP recv_from failed: {:?}", e);
                     break;
                 }
             };
-            info!("udp recv: {} bytes from {}", n, src);
+            debug!("CLI UDP recv: {} bytes from {}", n, src);
 
-            let mut d = BytesMut::with_capacity(4 + n);
+            // [channel_id][src_addr_header][payload]
+            let mut d = BytesMut::with_capacity(4 + 1 + 2 + 16 + n);
             d.put_u32(channel_id);
+            encode_socket_addr(&mut d, src);
             d.extend_from_slice(&buf[..n]);
 
             if let Err(e) = conn_rx.send_datagram(d.freeze()) {
-                error!("send_datagram failed: {:?}", e);
+                error!("CLI send_datagram failed: {:?}", e);
                 break;
             }
         }
     });
 
     // === QUIC -> UDP ===
-    let conn_cl = conn.clone();
     let quic_to_udp = tokio::spawn(async move {
         loop {
             let d = match conn_cl.read_datagram().await {
                 Ok(d) => d,
-                Err(_) => break, // QUIC closed
+                Err(e) => {
+                    warn!("CLI read_datagram ended: {:?}", e);
+                    break;
+                }
             };
 
             if d.len() < 4 {
                 continue;
             }
 
-            let id = u32::from_be_bytes([d[0], d[1], d[2], d[3]]);
-            if id != channel_id {
+            let chan = u32::from_be_bytes([d[0], d[1], d[2], d[3]]);
+            if chan != channel_id {
+                // Other channel, ignore for this forwarder instance
                 continue;
             }
 
-            let payload = &d[4..];
+            let body = &d[4..];
+            let (src, hdr_len) = match decode_socket_addr(body) {
+                Some(v) => v,
+                None => {
+                    warn!("CLI: invalid src header in datagram");
+                    continue;
+                }
+            };
 
-            if let Err(e) = sock_tx.send(payload).await {
-                error!("udp send failed: {:?}", e);
+            let payload = &body[hdr_len..];
+            if payload.is_empty() {
+                continue;
+            }
+
+            if let Err(e) = sock_tx.send_to(payload, src).await {
+                warn!("CLI UDP send_to failed: {:?}", e);
                 break;
             }
         }
     });
 
     // === Wait for shutdown ===
-    let conn_cl = conn.clone();
+    let conn_cl2 = conn.clone();
     tokio::select! {
-        _ = conn_cl.closed() => {
-            warn!("QUIC connection closed — stopping UDP forward");
-        },
+        _ = conn_cl2.closed() => {
+            warn!("CLI QUIC connection closed — stopping UDP forward");
+        }
 
-        _ = &mut Box::pin(async { udp_to_quic.await }) => {},
-
-        _ = &mut Box::pin(async { quic_to_udp.await }) => {},
+        _ = udp_to_quic => {}
+        _ = quic_to_udp => {}
 
         _ = SHUTDOWN.cancelled() => {
-            info!("Shutdown requested — closing UDP forward");
+            info!("CLI shutdown requested — closing UDP forward");
             let _ = conn.close(0u32.into(), b"shutdown");
         }
     }
