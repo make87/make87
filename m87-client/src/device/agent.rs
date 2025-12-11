@@ -3,7 +3,7 @@ use tokio::{
     pin, signal,
     time::{Duration, sleep},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use std::path::Path;
 use std::process::Command;
@@ -325,16 +325,17 @@ async fn login_and_run() -> Result<()> {
         loop {
             info!("Starting control tunnel...");
             if let Err(e) = server::connect_control_tunnel().await {
-                error!("Control tunnel crashed with error: {e}. Restarting in 10 seconds...");
+                error!("Control tunnel crashed with error: {e}. Reconnecting in 5 seconds...");
+                tokio::time::sleep(Duration::from_secs(5)).await;
             } else {
-                error!("Control tunnel exited normally. Restarting in 10 seconds...");
+                warn!("Control tunnel exited normally. Reconnecting...");
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
-            tokio::time::sleep(Duration::from_secs(10)).await;
         }
     });
 
-    if res.is_err() {
-        error!("Failed to report device details: {:?}", res);
+    if let Err(e) = res {
+        warn!("Failed to report device details: {:?}", e.root_cause());
     }
 
     device_loop().await?;
@@ -360,7 +361,7 @@ async fn sync_with_backend() -> Result<()> {
     let token = AuthManager::get_device_token()?;
     let metrics = collect_system_metrics().await?;
     let services = collect_all_services().await?;
-    let _instruction = send_heartbeat(
+    if let Err(e) = send_heartbeat(
         last_instruciotn_hash,
         &config.device_id,
         &config.get_server_url(),
@@ -369,7 +370,11 @@ async fn sync_with_backend() -> Result<()> {
         services,
         config.trust_invalid_server_cert,
     )
-    .await?;
+    .await
+    {
+        warn!("Failed to send heartbeat: {:?}", e.root_cause());
+        return Ok(());
+    }
     info!("Sync complete");
     Ok(())
 }

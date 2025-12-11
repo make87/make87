@@ -37,7 +37,7 @@ async fn get_devices(
     let mut devices = DeviceDoc::to_public_devices(devices);
     // for each check if state.relay.has_tunnel
     for device in &mut devices {
-        if state.relay.has_tunnel(&device.id).await {
+        if state.relay.has_tunnel(&device.short_id).await {
             device.online = true;
         }
     }
@@ -66,7 +66,7 @@ async fn get_device_by_id(
         .await?;
     let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
     let mut pub_device: PublicDevice = device.into();
-    if state.relay.has_tunnel(&id).await {
+    if state.relay.has_tunnel(&pub_device.short_id).await {
         pub_device.online = true;
     }
 

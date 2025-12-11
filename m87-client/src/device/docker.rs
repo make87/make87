@@ -100,7 +100,7 @@ async fn spawn_socket_tunnel(device: &str, endpoint: &PathBuf) -> Result<()> {
 async fn wait_for_socket_ready(path: &PathBuf) -> Result<()> {
     #[cfg(unix)]
     {
-        for _ in 0..20 {
+        for _ in 0..50 {
             if path.exists() {
                 return Ok(());
             }
@@ -121,7 +121,7 @@ async fn wait_for_socket_ready(path: &PathBuf) -> Result<()> {
         let pipe = path.display().to_string();
         let wide: Vec<u16> = pipe.encode_utf16().chain(std::iter::once(0)).collect();
 
-        for _ in 0..20 {
+        for _ in 0..50 {
             let h = unsafe {
                 CreateFileW(
                     wide.as_ptr(),

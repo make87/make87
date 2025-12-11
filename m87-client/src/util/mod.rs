@@ -16,3 +16,4 @@ pub mod system_info;
 pub mod fs;
 pub mod ssh;
 pub mod tls;
+pub mod udp;
