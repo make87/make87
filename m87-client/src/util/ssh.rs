@@ -322,6 +322,7 @@ impl server::Handler for M87SshHandler {
         data: &[u8],
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        tracing::debug!("SSH data received: {} bytes for channel {:?}", data.len(), channel);
         if let Some(pty) = self.ptys.get(&channel) {
             let pty = pty.clone();
             let buf = data.to_vec();
@@ -329,7 +330,10 @@ impl server::Handler for M87SshHandler {
                 use std::io::Write;
                 let mut guard = pty.blocking_lock();
                 let _ = guard.writer.write_all(&buf);
+                let _ = guard.writer.flush();
             });
+        } else {
+            tracing::warn!("No PTY found for channel {:?}", channel);
         }
         Ok(())
     }
