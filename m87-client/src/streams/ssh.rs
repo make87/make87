@@ -9,14 +9,14 @@ pub async fn handle_ssh_io(io: QuicIo) {
     let home_dir = dirs::home_dir().unwrap();
     let home_dir = home_dir.to_path_buf();
 
-    tracing::debug!("Creating SSH server config...");
+    tracing::info!("Creating SSH server config...");
     let config = make_server_config();
-    tracing::debug!("SSH config created, starting run_stream...");
+    tracing::info!("SSH config created, starting run_stream...");
     let handler = M87SshHandler::new(home_dir);
 
     match server::run_stream(config, io, handler).await {
         Ok(running) => {
-            tracing::debug!("SSH handshake complete, session running");
+            tracing::info!("SSH handshake complete, session running");
             // Second stage: lifetime of the connection
             if let Err(e) = running.await {
                 tracing::error!("SSH connection closed: {:?}", e);
