@@ -99,18 +99,17 @@ async fn tunnel_device_port_tcp(
     tunnel_spec: &TcpTarget,
     trust_invalid_server_cert: bool,
 ) -> Result<()> {
-    // TODO: Replace `info!` with lower logging level but keep important user feedback (also fix e2e test that relies on parsing this info)
-    info!(
+    debug!(
         "Binding TCP listener on 127.0.0.1:{}",
         tunnel_spec.local_port
     );
     let listener = TcpListener::bind(("127.0.0.1", tunnel_spec.local_port)).await?;
     let remote_host = tunnel_spec.remote_host.clone();
 
-    info!("Connecting to QUIC server...");
+    debug!("Connecting to QUIC server...");
     let (_endpoint, conn) =
         connect_quic_only(host_name, token, device_short_id, trust_invalid_server_cert).await?;
-    info!("QUIC connection established, entering accept loop");
+    debug!("QUIC connection established, entering accept loop");
 
     info!(
         "TCP forward: 127.0.0.1:{} → {}/{}:{}",
