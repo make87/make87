@@ -281,6 +281,7 @@ impl server::Handler for M87SshHandler {
         let handle = self.handle.clone().unwrap();
 
         tokio::spawn(async move {
+            tracing::debug!("PTY reader task started for channel {:?}", channel);
             loop {
                 let read_result = task::spawn_blocking({
                     let pty = pty.clone();
@@ -289,9 +290,18 @@ impl server::Handler for M87SshHandler {
                         let mut buf = [0u8; 8192];
                         let mut guard = pty.blocking_lock();
                         match guard.reader.read(&mut buf) {
-                            Ok(0) => None,
-                            Ok(n) => Some(buf[..n].to_vec()),
-                            Err(_) => None,
+                            Ok(0) => {
+                                tracing::debug!("PTY read returned 0 bytes (EOF)");
+                                None
+                            }
+                            Ok(n) => {
+                                tracing::debug!("PTY read {} bytes", n);
+                                Some(buf[..n].to_vec())
+                            }
+                            Err(e) => {
+                                tracing::debug!("PTY read error: {:?}", e);
+                                None
+                            }
                         }
                     }
                 })
@@ -301,14 +311,20 @@ impl server::Handler for M87SshHandler {
 
                 match read_result {
                     Some(data) => {
+                        tracing::debug!("Sending {} bytes to SSH channel", data.len());
                         if handle.data(channel, data.into()).await.is_err() {
+                            tracing::debug!("Failed to send data to SSH channel");
                             break;
                         }
                     }
-                    None => break,
+                    None => {
+                        tracing::debug!("PTY reader loop ending");
+                        break;
+                    }
                 }
             }
 
+            tracing::debug!("PTY reader task ending, sending EOF");
             let _ = handle.eof(channel).await;
             let _ = handle.close(channel).await;
         });
