@@ -76,29 +76,14 @@ where
 {
     let shell = get_shell();
 
-    let mut cmd = Command::new(&shell);
-    cmd.arg("-c")
+    let mut child = match Command::new(&shell)
+        .arg("-c")
         .arg(&config.command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // Create a new session so the child has no controlling terminal.
-    // This ensures programs like `sudo` that open /dev/tty will fall back
-    // to using stderr for prompts (which we pipe back to the manager).
-    #[cfg(unix)]
+        .stderr(Stdio::piped())
+        .spawn()
     {
-        #[allow(unused_imports)]
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-
-    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             let mut w = writer.lock().await;
