@@ -13,15 +13,20 @@ use russh::{Channel, ChannelId};
 use crate::util::fs::run_sftp_server;
 
 /// One PTY-backed shell session per SSH channel.
+/// Reader and writer are separated to avoid lock contention.
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    reader: Box<dyn std::io::Read + Send>,
-    writer: Box<dyn std::io::Write + Send>,
     #[allow(dead_code)]
     child: Box<dyn Child + Send>,
     rows: u32,
     cols: u32,
 }
+
+/// Separate reader for PTY output (moved to its own Arc<Mutex<>>)
+type PtyReader = Arc<std::sync::Mutex<Box<dyn std::io::Read + Send>>>;
+
+/// Separate writer for PTY input (moved to its own Arc<Mutex<>>)
+type PtyWriter = Arc<std::sync::Mutex<Box<dyn std::io::Write + Send>>>;
 
 impl PtySession {
     fn resize(&mut self, rows: u32, cols: u32) {
@@ -42,12 +47,14 @@ impl PtySession {
 pub struct M87SshHandler {
     /// Root directory for SFTP and exec/shell (e.g. `/` or some chroot-ish base).
     root_dir: PathBuf,
-    /// Session channels we’ve opened; used to hand off SFTP, etc.
+    /// Session channels we've opened; used to hand off SFTP, etc.
     session_channels: HashMap<ChannelId, Channel<Msg>>,
     /// Global async handle used to send data/events to channels.
     handle: Option<Handle>,
-    /// PTY sessions keyed by SSH channel id.
+    /// PTY sessions keyed by SSH channel id (for resize).
     ptys: HashMap<ChannelId, Arc<Mutex<PtySession>>>,
+    /// PTY writers keyed by SSH channel id (separate lock from reader).
+    pty_writers: HashMap<ChannelId, PtyWriter>,
     /// Cached PTY size requested before shell starts.
     pty_sizes: HashMap<ChannelId, (u32, u32)>,
     /// Default login shell for PTY sessions.
@@ -61,15 +68,18 @@ impl M87SshHandler {
             session_channels: HashMap::new(),
             handle: None,
             ptys: HashMap::new(),
+            pty_writers: HashMap::new(),
             pty_sizes: HashMap::new(),
             default_shell: "/bin/bash".to_string(),
         }
     }
 
+    /// Spawns a PTY shell and returns the reader (for output).
+    /// The writer is stored internally for use by the data handler.
     fn spawn_pty_shell_for_channel(
         &mut self,
         channel: ChannelId,
-    ) -> Result<Arc<Mutex<PtySession>>> {
+    ) -> Result<PtyReader> {
         let (cols, rows) = self.pty_sizes.get(&channel).copied().unwrap_or((80, 24));
 
         let pty_system = native_pty_system();
@@ -92,16 +102,22 @@ impl M87SshHandler {
         let master = pair.master;
         let pty_session = PtySession {
             master,
-            reader,
-            writer,
             child,
             rows,
             cols,
         };
 
-        let arc = Arc::new(Mutex::new(pty_session));
-        self.ptys.insert(channel, arc.clone());
-        Ok(arc)
+        // Store session (for resize) and writer (for input) separately
+        let session_arc = Arc::new(Mutex::new(pty_session));
+        self.ptys.insert(channel, session_arc);
+
+        // Store writer with its own lock
+        let writer_arc: PtyWriter = Arc::new(std::sync::Mutex::new(writer));
+        self.pty_writers.insert(channel, writer_arc);
+
+        // Return reader with its own lock
+        let reader_arc: PtyReader = Arc::new(std::sync::Mutex::new(reader));
+        Ok(reader_arc)
     }
 }
 
@@ -210,6 +226,7 @@ impl server::Handler for M87SshHandler {
     ) -> Result<(), Self::Error> {
         self.session_channels.remove(&channel);
         self.ptys.remove(&channel);
+        self.pty_writers.remove(&channel);
         self.pty_sizes.remove(&channel);
         Ok(())
     }
@@ -274,7 +291,7 @@ impl server::Handler for M87SshHandler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        let pty = self.spawn_pty_shell_for_channel(channel)?;
+        let reader = self.spawn_pty_shell_for_channel(channel)?;
 
         session.channel_success(channel)?;
 
@@ -284,12 +301,13 @@ impl server::Handler for M87SshHandler {
             tracing::debug!("PTY reader task started for channel {:?}", channel);
             loop {
                 let read_result = task::spawn_blocking({
-                    let pty = pty.clone();
+                    let reader = reader.clone();
                     move || {
                         use std::io::Read;
                         let mut buf = [0u8; 8192];
-                        let mut guard = pty.blocking_lock();
-                        match guard.reader.read(&mut buf) {
+                        // Use std::sync::Mutex::lock() instead of blocking_lock()
+                        let mut guard = reader.lock().unwrap();
+                        match guard.read(&mut buf) {
                             Ok(0) => {
                                 tracing::debug!("PTY read returned 0 bytes (EOF)");
                                 None
@@ -339,17 +357,18 @@ impl server::Handler for M87SshHandler {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         tracing::debug!("SSH data received: {} bytes for channel {:?}", data.len(), channel);
-        if let Some(pty) = self.ptys.get(&channel) {
-            let pty = pty.clone();
+        if let Some(writer) = self.pty_writers.get(&channel) {
+            let writer = writer.clone();
             let buf = data.to_vec();
             task::spawn_blocking(move || {
                 use std::io::Write;
-                let mut guard = pty.blocking_lock();
-                let _ = guard.writer.write_all(&buf);
-                let _ = guard.writer.flush();
+                // Use std::sync::Mutex::lock() - separate lock from reader
+                let mut guard = writer.lock().unwrap();
+                let _ = guard.write_all(&buf);
+                let _ = guard.flush();
             });
         } else {
-            tracing::warn!("No PTY found for channel {:?}", channel);
+            tracing::warn!("No PTY writer found for channel {:?}", channel);
         }
         Ok(())
     }
