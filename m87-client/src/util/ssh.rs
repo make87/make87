@@ -41,9 +41,6 @@ impl PtySession {
     }
 }
 
-/// Writer for exec process stdin
-type ExecWriter = Arc<Mutex<tokio::process::ChildStdin>>;
-
 /// Server-side SSH handler state.
 ///
 /// One instance per SSH connection (russh does this for you).
@@ -58,8 +55,6 @@ pub struct M87SshHandler {
     ptys: HashMap<ChannelId, Arc<Mutex<PtySession>>>,
     /// PTY writers keyed by SSH channel id (separate lock from reader).
     pty_writers: HashMap<ChannelId, PtyWriter>,
-    /// Exec process stdin writers keyed by SSH channel id.
-    exec_writers: HashMap<ChannelId, ExecWriter>,
     /// Cached PTY size requested before shell starts.
     pty_sizes: HashMap<ChannelId, (u32, u32)>,
     /// Default login shell for PTY sessions.
@@ -74,7 +69,6 @@ impl M87SshHandler {
             handle: None,
             ptys: HashMap::new(),
             pty_writers: HashMap::new(),
-            exec_writers: HashMap::new(),
             pty_sizes: HashMap::new(),
             default_shell: "/bin/bash".to_string(),
         }
@@ -233,7 +227,6 @@ impl server::Handler for M87SshHandler {
         self.session_channels.remove(&channel);
         self.ptys.remove(&channel);
         self.pty_writers.remove(&channel);
-        self.exec_writers.remove(&channel);
         self.pty_sizes.remove(&channel);
         Ok(())
     }
@@ -365,7 +358,8 @@ impl server::Handler for M87SshHandler {
     ) -> Result<(), Self::Error> {
         tracing::debug!("SSH data received: {} bytes for channel {:?}", data.len(), channel);
 
-        // Try PTY writer first (for shell sessions)
+        // Route to PTY writer (for shell sessions)
+        // Note: exec sessions use Channel::into_stream() so data flows directly
         if let Some(writer) = self.pty_writers.get(&channel) {
             let writer = writer.clone();
             let buf = data.to_vec();
@@ -374,16 +368,6 @@ impl server::Handler for M87SshHandler {
                 let mut guard = writer.lock().unwrap();
                 let _ = guard.write_all(&buf);
                 let _ = guard.flush();
-            });
-        // Try exec writer (for exec sessions)
-        } else if let Some(writer) = self.exec_writers.get(&channel) {
-            use tokio::io::AsyncWriteExt;
-            let writer = writer.clone();
-            let buf = data.to_vec();
-            tokio::spawn(async move {
-                let mut guard = writer.lock().await;
-                let _ = guard.write_all(&buf).await;
-                let _ = guard.flush().await;
             });
         } else {
             tracing::debug!("No writer found for channel {:?}", channel);
@@ -406,14 +390,20 @@ impl server::Handler for M87SshHandler {
         let handle = self.handle.clone().unwrap();
         let cwd = self.root_dir.clone();
 
-        // Spawn process with piped stdin/stdout/stderr for streaming
+        // Get the channel object (like SFTP does) for proper stream handling
+        let Some(ch) = self.session_channels.remove(&channel) else {
+            session.channel_failure(channel)?;
+            return Ok(());
+        };
+
+        // Spawn process with piped stdin/stdout/stderr
         let mut child = match Command::new("/bin/sh")
             .arg("-c")
             .arg(&cmd)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::inherit()) // Merge stderr into the session
             .spawn()
         {
             Ok(c) => c,
@@ -428,62 +418,60 @@ impl server::Handler for M87SshHandler {
             }
         };
 
-        // Store stdin writer for data() handler to use
-        if let Some(stdin) = child.stdin.take() {
-            self.exec_writers
-                .insert(channel, Arc::new(Mutex::new(stdin)));
-        }
-
         session.channel_success(channel)?;
 
-        let mut stdout = child.stdout.take();
-        let mut stderr = child.stderr.take();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = child.stdout.take().unwrap();
 
-        // Spawn task to stream stdout
-        let handle_stdout = handle.clone();
-        let stdout_task = tokio::spawn(async move {
-            if let Some(ref mut stdout) = stdout {
-                let mut buf = [0u8; 8192];
-                loop {
-                    match stdout.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if handle_stdout.data(channel, buf[..n].to_vec().into()).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        });
+        // Convert channel to async stream (the russh-recommended approach)
+        let mut chan_stream = ch.into_stream();
 
-        // Spawn task to stream stderr
-        let handle_stderr = handle.clone();
-        let stderr_task = tokio::spawn(async move {
-            if let Some(ref mut stderr) = stderr {
-                let mut buf = [0u8; 8192];
-                loop {
-                    match stderr.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if handle_stderr.data(channel, buf[..n].to_vec().into()).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        });
-
-        // Spawn task to wait for process completion and send exit status
+        // Spawn bidirectional copy between SSH channel and process
         tokio::spawn(async move {
-            // Wait for stdout/stderr tasks to complete
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
+            // Copy in both directions using tokio::select!
+            let copy_result = async {
+                let mut chan_buf = [0u8; 8192];
+                let mut proc_buf = [0u8; 8192];
 
-            // Wait for process exit
+                loop {
+                    tokio::select! {
+                        // Channel -> Process stdin
+                        result = chan_stream.read(&mut chan_buf) => {
+                            match result {
+                                Ok(0) => {
+                                    // EOF from channel, close stdin
+                                    drop(stdin);
+                                    break;
+                                }
+                                Ok(n) => {
+                                    use tokio::io::AsyncWriteExt;
+                                    if stdin.write_all(&chan_buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        // Process stdout -> Channel
+                        result = stdout.read(&mut proc_buf) => {
+                            match result {
+                                Ok(0) => break, // Process done
+                                Ok(n) => {
+                                    use tokio::io::AsyncWriteExt;
+                                    if chan_stream.write_all(&proc_buf[..n]).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }
+                }
+            };
+
+            copy_result.await;
+
+            // Wait for process exit and send status
             let exit_code = match child.wait().await {
                 Ok(status) => status.code().unwrap_or(1) as u32,
                 Err(_) => 1,
