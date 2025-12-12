@@ -73,16 +73,28 @@ impl M87SftpHandler {
             }
         }
 
-        let full = self.root.join(clean);
+        let full = self.root.join(&clean);
 
-        // Canonicalize to defeat symlink escapes
-        let canon = std::fs::canonicalize(&full).map_err(|_| StatusCode::NoSuchFile)?;
+        // Try to canonicalize the full path first (for existing files)
+        if let Ok(canon) = std::fs::canonicalize(&full) {
+            if !canon.starts_with(&self.root) {
+                return Err(StatusCode::PermissionDenied);
+            }
+            return Ok(canon);
+        }
 
-        if !canon.starts_with(&self.root) {
+        // File doesn't exist - canonicalize parent directory instead
+        // This allows file creation while preventing path traversal
+        let parent = full.parent().ok_or(StatusCode::NoSuchFile)?;
+        let canon_parent = std::fs::canonicalize(parent).map_err(|_| StatusCode::NoSuchFile)?;
+
+        if !canon_parent.starts_with(&self.root) {
             return Err(StatusCode::PermissionDenied);
         }
 
-        Ok(canon)
+        // Return parent + filename (the file will be created)
+        let filename = full.file_name().ok_or(StatusCode::NoSuchFile)?;
+        Ok(canon_parent.join(filename))
     }
 
     fn make_status_ok(&self, id: u32) -> Status {
