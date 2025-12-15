@@ -83,7 +83,7 @@ fn print_direntry_unix(e: &DirEntry, size_width: usize) {
     let size_s = format!("{:>width$}", human_size(size), width = size_width);
 
     let mtime = attrs.mtime.unwrap_or(0) as u64;
-    let date = crate::util::logging::human_date(mtime);
+    let date = crate::util::logging::human_time(mtime);
 
     let name = color_name(&e.file_name(), ftype);
 

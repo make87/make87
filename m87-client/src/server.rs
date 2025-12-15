@@ -278,6 +278,10 @@ pub async fn connect_control_tunnel() -> Result<()> {
     let (_endpoint, quic_conn): (_, Connection) =
         get_quic_connection(&control_host, &token, config.trust_invalid_server_cert)
             .await
+            .map_err(|e| {
+                error!("QUIC connect failed: {}", e);
+                e
+            })
             .context("QUIC connect failed")?;
 
     //  SHUTDOWN SIGNAL

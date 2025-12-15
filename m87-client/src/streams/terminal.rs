@@ -11,10 +11,11 @@ use std::path::Path;
 use std::{io::Read, io::Write, sync::Arc};
 
 use crate::streams::quic::QuicIo;
+use crate::util::system_info::get_system_info;
 
 pub async fn handle_terminal_io(io: &mut QuicIo) {
     // Notify client that shell is initializing
-    let _ = io.write_all(b"Initializing shell...\r\n").await;
+    let _ = io.write_all(b"\n\rInitializing shell..").await;
 
     // --------------------------------------------------------------------
     // 1. Create PTY
@@ -120,7 +121,36 @@ pub async fn handle_terminal_io(io: &mut QuicIo) {
         return;
     }
 
-    let _ = io.write_all(b"Shell connected successfully\r\n").await;
+    match get_system_info().await {
+        Ok(i) => {
+            let banner = format!(
+                "\r\n\
+            ┌────────────────────────────────────────────────────────────┐\r\n\
+            │ make87 remote shell                                        │\r\n\
+            ├────────────────────────────────────────────────────────────┤\r\n\
+            │ user:    {:<49} │\r\n\
+            │ host:    {:<49} │\r\n\
+            │ os:      {:<49} │\r\n\
+            │ arch:    {:<49} │\r\n\
+            │ cpu:     {:<49} │\r\n\
+            │ memory:  {:<49} │\r\n\
+            │ ip:      {:<49} │\r\n\
+            ├────────────────────────────────────────────────────────────┤\r\n\r\n",
+                i.username,
+                i.hostname,
+                i.operating_system,
+                i.architecture,
+                format!("{} ({} cores)", i.cpu_name, i.cores.unwrap_or(0)),
+                format!("{:.1} GB", i.memory.unwrap_or(0.0)),
+                i.public_ip_address.as_deref().unwrap_or("n/a"),
+            );
+
+            let _ = io.write_all(banner.as_bytes()).await;
+        }
+        Err(_) => {
+            let _ = io.write_all(b"Shell connected successfully\r\n").await;
+        }
+    }
 
     // --------------------------------------------------------------------
     // 5. Main loop: IO <-> PTY

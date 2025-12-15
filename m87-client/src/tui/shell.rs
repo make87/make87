@@ -38,7 +38,8 @@ pub async fn run_shell(device: &str) -> Result<()> {
     // Enter raw mode so Ctrl+C is sent as byte 0x03 instead of being handled locally
     let _raw_mode = std::io::stdout().into_raw_mode()?;
 
-    println!("Connected. Press Ctrl+C to exit.\n\r");
+    tracing::info!("[done] Connected. Enter exit to close the connection.");
+    tracing::info!("\r");
 
     // === Spawn task: stdin → writer ===
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();

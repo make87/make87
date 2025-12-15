@@ -15,6 +15,7 @@ pub async fn run_docker_command(device: &str, args: Vec<String>) -> Result<()> {
 
     spawn_socket_tunnel(device, &endpoint).await?;
     wait_for_socket_ready(&endpoint).await?;
+    tracing::info!("[done] Connected");
 
     SubprocessBuilder::new("docker")
         .args(args)

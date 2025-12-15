@@ -53,6 +53,7 @@ pub async fn run_exec(device: &str, command: Vec<String>, stdin: bool, tty: bool
     )
     .await
     .context("Failed to connect to RAW metrics stream")?;
+    tracing::info!("[done] Connected to device");
 
     // Join command into single string (shell will interpret operators like && |)
     let cmd_str = command.join(" ");

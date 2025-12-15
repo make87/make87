@@ -60,7 +60,7 @@ pub async fn open_serial(device: &str, port: &str, baud: u32) -> Result<()> {
 
     let (master_fd, slave_path) = open_pty()?;
 
-    info!("Local virtual serial device: {}", slave_path);
+    info!("[done] Local virtual serial device: {}", slave_path);
 
     // Convert master FD → tokio file
     let master = unsafe { tokio::fs::File::from_raw_fd(master_fd) };

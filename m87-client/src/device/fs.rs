@@ -361,6 +361,7 @@ pub async fn sync(src: &str, dst: &str, delete: bool) -> Result<()> {
 
     let mut sftp_src = maybe_open_sftp(&src_path).await?;
     let mut sftp_dst = maybe_open_sftp(&dst_path).await?;
+    tracing::info!("[done] Connected");
 
     let src_tree = match &src_path {
         LocalOrRemotePath::Local(p) => read_local_tree(p).await?,

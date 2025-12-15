@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::{net::SocketAddr, sync::Arc};
 use std::{pin::Pin, task::Poll};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::streams::stream_type::StreamType;
 use crate::util::tls::NoVerify; // reuse the same NoVerify struct
@@ -98,7 +98,13 @@ pub async fn get_quic_connection(
         .connect(server_addr, port_free_host_name)
         .context("QUIC connect() failed")?;
 
-    let conn = connecting.await.context("QUIC handshake failed")?;
+    let conn = connecting
+        .await
+        .map_err(|e| {
+            error!("QUIC connect failed: {}", e);
+            e
+        })
+        .context("QUIC handshake failed")?;
 
     let mut send = conn.open_uni().await?;
     debug!("Connected to server");

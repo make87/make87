@@ -111,14 +111,14 @@ async fn tunnel_device_port_tcp(
     debug!("QUIC connection established, entering accept loop");
 
     info!(
-        "TCP forward: 127.0.0.1:{} → {}/{}:{}",
+        "[done] TCP forward: 127.0.0.1:{} → {}/{}:{}",
         &tunnel_spec.local_port, device_short_id, remote_host, &tunnel_spec.remote_port
     );
     loop {
         tokio::select! {
             accept_result = listener.accept() => {
                 let (mut local_stream, addr) = accept_result?;
-                debug!("New local TCP connection from {addr}");
+                info!("New local TCP connection from {addr}");
                 let stream_type = tunnel_spec.to_stream_type(token);
                 let mut quic_io = open_quic_stream(
                     &conn,
@@ -178,7 +178,7 @@ async fn tunnel_device_port_udp(
     quic_io.send.finish()?;
 
     info!(
-        "UDP forward: 127.0.0.1:{} → {} {}:{}",
+        "[done] UDP forward: 127.0.0.1:{} → {} {}:{}",
         &tunnel_spec.local_port,
         device_short_id,
         &tunnel_spec.remote_host,
@@ -305,7 +305,7 @@ async fn tunnel_device_socket(
 
     let listener = UnixListener::bind(local_path)?;
     info!(
-        "UNIX forward: local {} → {} {}",
+        "[done] Socket forward: local {} → {} {}",
         local_path, device_short_id, target.remote_path
     );
 

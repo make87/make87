@@ -18,7 +18,7 @@ pub async fn run_logs(device: &str) -> Result<()> {
 
     let token = AuthManager::get_cli_token().await?;
 
-    println!("Connecting to logs of {} ...", device);
+    tracing::info!("Connecting to logs of {} ...", device);
 
     let stream_type = StreamType::Logs {
         token: token.to_string(),
@@ -33,7 +33,7 @@ pub async fn run_logs(device: &str) -> Result<()> {
     .await
     .context("Failed to connect to RAW metrics stream")?;
 
-    println!("Connected. Press Ctrl+C to exit.\n");
+    tracing::info!("[done] Connected. Press Ctrl+C to exit.\n");
 
     let mut stdout = tokio::io::stdout();
 
@@ -81,6 +81,6 @@ pub async fn run_logs(device: &str) -> Result<()> {
         _ = SHUTDOWN.cancelled() => {},
     }
 
-    println!("\nLogs stream closed.");
+    tracing::info!("\nLogs stream closed.");
     Ok(())
 }

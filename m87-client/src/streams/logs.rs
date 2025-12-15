@@ -13,6 +13,9 @@ pub async fn handle_logs_io(io: &mut QuicIo) {
 
     // Forward log lines until IO is closed
     while let Ok(line) = rx.recv().await {
+        let Some(line) = line.as_line() else {
+            continue;
+        };
         if io.write_all(line.as_bytes()).await.is_err() {
             break;
         }

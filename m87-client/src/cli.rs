@@ -52,6 +52,10 @@ fn print_help_with_device_commands() {
 #[command(name = "m87")]
 #[command(version, about = "m87 CLI - Unified CLI for the make87 platform", long_about = None)]
 struct Cli {
+    /// Enable verbose logging (disable spinner, show full logs)
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -257,36 +261,53 @@ pub async fn cli() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
-    init_logging("info");
+    let mut verbose = cli.verbose;
+
+    let cli_mode = match &cli.command {
+        // Agent run must never be CLI mode
+        #[cfg(feature = "agent")]
+        Commands::Agent(AgentCommands::Run) => {
+            verbose = true;
+            false
+        }
+
+        // Everything else is CLI UX
+        _ => true,
+    };
+
+    init_logging("info", cli_mode, verbose);
+    if cli_mode && !verbose {
+        tracing::info!("[loading]");
+    }
     set_tls_provider();
 
     match cli.command {
         Commands::Login => {
-            println!("Logging in as manager...");
+            tracing::info!("Logging in as manager...");
             auth::login_cli().await?;
-            println!("Logged in as manager successfully");
+            tracing::info!("[done] Logged in as manager successfully");
         }
 
         Commands::Logout => {
-            println!("Logging out...");
+            tracing::info!("Logging out...");
             auth::logout_cli().await?;
             #[cfg(feature = "agent")]
             auth::logout_device().await?;
-            println!("Logged out successfully");
+            tracing::info!("[done] Logged out successfully");
         }
 
         Commands::Ssh(cmd) => match cmd {
             SshCommands::Enable => {
-                println!("Enabling SSH...");
+                tracing::info!("Enabling SSH...");
                 device::ssh::ssh_enable()?;
-                println!(
-                    "SSH enabled successfully. You can now connect to device via ssh m87-<device_name>"
+                tracing::info!(
+                    "[done] SSH enabled successfully. You can now connect to device via ssh m87-<device_name>"
                 );
             }
             SshCommands::Disable => {
-                println!("Disabling SSH...");
+                tracing::info!("Disabling SSH...");
                 device::ssh::ssh_disable()?;
-                println!("SSH disabled successfully");
+                tracing::info!("[done] SSH disabled successfully");
             }
             SshCommands::Connect(args) => {
                 if args.is_empty() {
@@ -322,10 +343,10 @@ pub async fn cli() -> anyhow::Result<()> {
         Commands::Agent(cmd) => match cmd {
             AgentCommands::Login { org_id, email } => {
                 let owner_scope = org_id.or(email);
-                println!("Registering device as agent...");
+                tracing::info!("Registering device as agent...");
                 let sysinfo = util::system_info::get_system_info().await?;
                 auth::register_device(owner_scope, sysinfo).await?;
-                println!("Device registered as agent successfully");
+                tracing::info!("[done] Device registered as agent successfully");
             }
             AgentCommands::Run => {
                 device::agent::run().await?;
@@ -362,18 +383,19 @@ pub async fn cli() -> anyhow::Result<()> {
                 bail!("Not implemented");
             }
             DevicesCommands::Approve { device } => {
-                println!("Approving device: {}", device);
+                tracing::info!("Approving device: {}", device);
                 auth::accept_auth_request(&device).await?;
-                println!("Device approved successfully");
+                tracing::info!("[done] Device approved successfully");
             }
             DevicesCommands::Reject { device } => {
-                println!("Rejecting device: {}", device);
+                tracing::info!("Rejecting device: {}", device);
                 auth::reject_auth_request(&device).await?;
-                println!("Device rejected successfully");
+                tracing::info!("[done] Device rejected successfully");
             }
         },
 
         Commands::Version => {
+            tracing::info!("[done]");
             println!("Version: {}", env!("CARGO_PKG_VERSION"));
             println!("Build: {}", env!("GIT_COMMIT"));
             println!("Rust: {}", env!("RUSTC_VERSION"));
@@ -386,18 +408,19 @@ pub async fn cli() -> anyhow::Result<()> {
 
         Commands::Update { version } => {
             if let Some(v) = version {
-                println!(
+                tracing::info!(
                     "Note: Specific version updates not yet supported, updating to latest version"
                 );
-                eprintln!("Requested version: {}", v);
+                tracing::info!("[done] Requested version: {}", v);
             }
 
-            println!("Checking for updates...");
+            tracing::info!("[loading]");
+            tracing::info!("Checking for updates...");
             let success = update::update(true).await?;
             if success {
-                println!("Update successful");
+                tracing::info!("[done] Update successful");
             } else {
-                println!("Already at latest version");
+                tracing::info!("[done] Already at latest version");
             }
         }
 
