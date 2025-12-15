@@ -12,6 +12,11 @@ fn arch_bin_name() -> &'static str {
     {
         "m87-aarch64-unknown-linux-gnu"
     }
+
+    #[cfg(target_arch = "riscv64")]
+    {
+        "m87-riscv64gc-unknown-linux-gnu"
+    }
 }
 
 pub async fn update(interactive: bool) -> Result<bool> {
