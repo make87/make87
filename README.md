@@ -20,11 +20,11 @@ See [m87-client/](./m87-client/) for full documentation.
 
 ## Packages
 
-| Package                     | Description |
-|-----------------------------|-------------|
-| [m87-client](./m87-client/) | CLI and agent for edge devices |
+| Package                     | Description                                  |
+| --------------------------- | -------------------------------------------- |
+| [m87-client](./m87-client/) | CLI and agent for edge devices               |
 | [m87-server](./m87-server/) | Backend server (self-host or use make87.com) |
-| [m87-shared](./m87-shared/) | Internal shared types |
+| [m87-shared](./m87-shared/) | Internal shared types                        |
 
 ## Building
 
