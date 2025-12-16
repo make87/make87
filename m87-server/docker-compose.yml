@@ -51,7 +51,7 @@ services:
       - auto-update
     restart: always
     environment:
-      DOCKER_API_VERSION: 1.44  # support Docker v29
+      DOCKER_API_VERSION: 1.44 # support Docker v29
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     command: --cleanup --label-enable --interval 300

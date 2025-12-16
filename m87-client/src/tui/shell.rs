@@ -3,8 +3,9 @@ use crate::streams::stream_type::StreamType;
 use crate::util::shutdown::SHUTDOWN;
 use crate::{auth::AuthManager, config::Config, devices};
 use anyhow::Result;
-use termion::raw::IntoRawMode;
-use tokio::io::AsyncWriteExt;
+use termion::{raw::IntoRawMode, terminal_size};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 
 pub async fn run_shell(device: &str) -> Result<()> {
@@ -18,7 +19,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
 
     let token = AuthManager::get_cli_token().await?;
 
-    // --- open raw upgraded TLS stream ---
+    // --- open QUIC terminal stream ---
     let stream_type = StreamType::Terminal {
         token: token.to_string(),
     };
@@ -31,20 +32,31 @@ pub async fn run_shell(device: &str) -> Result<()> {
     )
     .await?;
 
-    // --- split for bidirectional tasks ---
     let mut reader = io.recv;
     let mut writer = io.send;
 
-    // Enter raw mode so Ctrl+C is sent as byte 0x03 instead of being handled locally
+    // --- raw mode ---
     let _raw_mode = std::io::stdout().into_raw_mode()?;
 
-    tracing::info!("[done] Connected. Enter exit to close the connection.");
+    // --- send initial terminal size ---
+    if let Ok((cols, rows)) = terminal_size() {
+        let mut buf = [0u8; 5];
+        buf[0] = 0xFF;
+        buf[1] = (rows >> 8) as u8;
+        buf[2] = rows as u8;
+        buf[3] = (cols >> 8) as u8;
+        buf[4] = cols as u8;
+
+        writer.write_all(&buf).await?;
+        writer.flush().await?;
+    }
+
+    tracing::info!("[done] Connected.");
     tracing::info!("\r");
 
-    // === Spawn task: stdin → writer ===
+    // === stdin → channel ===
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
-    // Blocking thread to read raw stdin (termion)
     std::thread::spawn(move || {
         use std::io::Read;
         let mut stdin = std::io::stdin();
@@ -64,33 +76,55 @@ pub async fn run_shell(device: &str) -> Result<()> {
         }
     });
 
-    // async writer task
+    // === writer task: stdin + resize (fused) ===
+    let mut sigwinch = signal(SignalKind::window_change())?;
+
     let mut writer_task = tokio::spawn(async move {
-        while let Some(bytes) = stdin_rx.recv().await {
-            if bytes.is_empty() {
-                // EOF / Ctrl+D → shutdown
-                let _ = writer.shutdown().await;
-                break;
+        loop {
+            tokio::select! {
+                // ----- stdin -----
+                Some(bytes) = stdin_rx.recv() => {
+                    if bytes.is_empty() {
+                        let _ = writer.shutdown().await;
+                        break;
+                    }
+
+                    writer.write_all(&bytes).await?;
+                    writer.flush().await?;
+                }
+
+                // ----- resize -----
+                _ = sigwinch.recv() => {
+                    if let Ok((cols, rows)) = terminal_size() {
+                        let mut buf = [0u8; 5];
+                        buf[0] = 0xFF;
+                        buf[1] = (rows >> 8) as u8;
+                        buf[2] = rows as u8;
+                        buf[3] = (cols >> 8) as u8;
+                        buf[4] = cols as u8;
+
+                        writer.write_all(&buf).await?;
+                        writer.flush().await?;
+                    }
+                }
             }
-            writer.write_all(&bytes).await?;
-            writer.flush().await?;
         }
+
         Ok::<_, anyhow::Error>(())
     });
 
-    // === Spawn task: reader → stdout ===
+    // === reader → stdout ===
     let mut reader_task = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         let mut buf = [0u8; 8192];
 
         loop {
-            let n = reader.read(&mut buf).await?;
-            let n = match n {
+            let n = match reader.read(&mut buf).await? {
                 Some(n) => n,
                 None => break,
             };
             if n == 0 {
-                break; // remote closed
+                break;
             }
             stdout.write_all(&buf[..n]).await?;
             stdout.flush().await?;
@@ -99,7 +133,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
         Ok::<_, anyhow::Error>(())
     });
 
-    // === Wait until one side closes ===
+    // === shutdown ===
     tokio::select! {
         _ = &mut reader_task => writer_task.abort(),
         _ = &mut writer_task => {},

@@ -68,7 +68,9 @@ pub async fn run_quic_endpoint(
 
                                         drop(permit);
                                         // Raw QUIC path (CLI, tunnels, forwards)
-                                        let _ = handle_quic_connection(conn.clone(), state_cl).await;
+                                        if let Err(e) = handle_quic_connection(conn.clone(), state_cl).await {
+                                            error!("Failed to handle QUIC connection: {e:?}");
+                                        }
                                         conn.close(0u32.into(), b"");
                                     }
                                     Err(e) => {

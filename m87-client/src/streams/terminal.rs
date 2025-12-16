@@ -156,7 +156,7 @@ pub async fn handle_terminal_io(io: &mut QuicIo) {
     // 5. Main loop: IO <-> PTY
     // --------------------------------------------------------------------
     let mut io_read_buf = [0u8; 1024];
-
+    let mut input_buf: Vec<u8> = Vec::new();
     'outer: loop {
         select! {
             // ---------- CLIENT → PTY ----------
@@ -164,14 +164,49 @@ pub async fn handle_terminal_io(io: &mut QuicIo) {
                 match r {
                     Ok(0) => break 'outer,
                     Ok(n) => {
-                        let data = io_read_buf[..n].to_vec();
-                        let writer = writer.clone();
-                        if tokio::task::spawn_blocking(move || {
-                            let mut w = writer.blocking_lock();
-                            w.write_all(&data)?;
-                            w.flush()
-                        }).await.is_err() {
-                            break 'outer;
+                        input_buf.extend_from_slice(&io_read_buf[..n]);
+
+                        while !input_buf.is_empty() {
+                            // ----- RESIZE FRAME -----
+                            if input_buf.len() >= 5 && input_buf[0] == 0xFF {
+                                let rows = u16::from_be_bytes([input_buf[1], input_buf[2]]);
+                                let cols = u16::from_be_bytes([input_buf[3], input_buf[4]]);
+
+                                let _ = pair.master.resize(PtySize {
+                                    rows,
+                                    cols,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                });
+
+                                // consume resize frame
+                                input_buf.drain(..5);
+                                continue;
+                            }
+
+                            // ----- NORMAL INPUT -----
+                            // everything until next resize marker or end
+                            let next_resize = input_buf
+                                .iter()
+                                .position(|&b| b == 0xFF)
+                                .unwrap_or(input_buf.len());
+
+                            let payload: Vec<u8> = input_buf.drain(..next_resize).collect();
+
+                            if !payload.is_empty() {
+                                let writer = writer.clone();
+
+                                if tokio::task::spawn_blocking(move || {
+                                    let mut w = writer.blocking_lock();
+                                    w.write_all(&payload)?;
+                                    w.flush()
+                                })
+                                .await
+                                .is_err()
+                                {
+                                    break 'outer;
+                                }
+                            }
                         }
                     }
                     Err(_) => break 'outer,
@@ -191,8 +226,6 @@ pub async fn handle_terminal_io(io: &mut QuicIo) {
                     break 'outer;
                 }
             }
-
-            else => break 'outer,
         }
     }
 
