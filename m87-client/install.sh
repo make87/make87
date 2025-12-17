@@ -10,10 +10,15 @@ set -e
 #   curl -fsSL get.make87.com | sh
 #
 # What it does:
-#   - Detects OS (Linux) and architecture (x86_64/aarch64)
+#   - Detects OS (Linux, macOS) and architecture (x86_64/aarch64)
 #   - Downloads specific version of m87 binary from GitHub releases
 #   - Verifies SHA256 checksum
 #   - Installs to /usr/local/bin/m87
+#
+# Supported platforms:
+#   - Linux x86_64 (AMD64)
+#   - Linux aarch64 (ARM64)
+#   - macOS aarch64 (Apple Silicon)
 
 # Color codes for pretty output
 RED='\033[0;31m'
@@ -53,8 +58,7 @@ detect_os() {
             OS="linux"
             ;;
         Darwin*)
-            error "macOS is not yet supported. Please build from source or check back later."
-            exit 1
+            OS="macos"
             ;;
         *)
             error "Unsupported operating system: $(uname -s)"
@@ -63,17 +67,25 @@ detect_os() {
     esac
 }
 
-# Detect architecture
+# Detect architecture (must be called after detect_os)
 detect_arch() {
     ARCH="$(uname -m)"
     case "$ARCH" in
         x86_64|amd64)
             ARCH="x86_64"
+            if [ "$OS" = "macos" ]; then
+                error "macOS x86_64 (Intel) is not supported. Only Apple Silicon (ARM64) is supported."
+                exit 1
+            fi
             TARGET="x86_64-unknown-linux-gnu"
             ;;
         aarch64|arm64)
             ARCH="aarch64"
-            TARGET="aarch64-unknown-linux-gnu"
+            if [ "$OS" = "macos" ]; then
+                TARGET="aarch64-apple-darwin"
+            else
+                TARGET="aarch64-unknown-linux-gnu"
+            fi
             ;;
         *)
             error "Unsupported architecture: $ARCH"
@@ -222,10 +234,17 @@ main() {
         warning "Could not download SHA256SUMS, skipping verification"
     fi
 
-    # Step 5: Install
+    # Step 5: Remove macOS quarantine attribute (if on macOS)
+    if [ "$OS" = "macos" ]; then
+        info "Removing macOS quarantine attribute..."
+        xattr -d com.apple.quarantine "$binary_path" 2>/dev/null || true
+        success "Quarantine attribute removed"
+    fi
+
+    # Step 6: Install
     install_binary "$binary_path"
 
-    # Step 6: Verify installation
+    # Step 7: Verify installation
     info "Verifying installation..."
     if command -v "$BINARY_NAME" >/dev/null 2>&1; then
         installed_version=$("$BINARY_NAME" --version 2>/dev/null || echo "unknown")
@@ -240,9 +259,13 @@ main() {
     echo ""
     echo "Get started with:"
     echo "  $BINARY_NAME --help               # Show all commands"
-    echo "  $BINARY_NAME login                # Authenticate if you plan to use as manager"
-    echo "  $BINARY_NAME agent login          # Authenticate if you plan to run as agent"
-    echo "  $BINARY_NAME agent enable --now   # Install as system service"
+    echo "  $BINARY_NAME login                # Authenticate with make87"
+    if [ "$OS" = "linux" ]; then
+        echo ""
+        echo "Agent mode (Linux only):"
+        echo "  $BINARY_NAME agent login          # Authenticate agent"
+        echo "  $BINARY_NAME agent enable --now   # Install as system service"
+    fi
     echo ""
 }
 
