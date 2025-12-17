@@ -53,30 +53,42 @@ jobs:
     strategy:
       matrix:
         include:
+          # Linux builds (Docker/manylinux2014)
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             arch: amd64
             package: m87-client
             dockerfile: m87-client/Dockerfile
             binary_name: m87
+            use_docker: true
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             arch: arm64
             package: m87-client
             dockerfile: m87-client/Dockerfile
             binary_name: m87
+            use_docker: true
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             arch: amd64
             package: m87-server
             dockerfile: m87-server/Dockerfile
             binary_name: m87-server
+            use_docker: true
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             arch: arm64
             package: m87-server
             dockerfile: m87-server/Dockerfile
             binary_name: m87-server
+            use_docker: true
+          # macOS builds (native cargo)
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            arch: arm64
+            package: m87-client
+            binary_name: m87
+            use_docker: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -87,9 +99,11 @@ jobs:
         run: git pull origin ${{ github.ref_name }}
 
       - name: Set up Docker Buildx
+        if: matrix.use_docker
         uses: docker/setup-buildx-action@v3
 
       - name: Build ${{ matrix.package }} using manylinux2014 container
+        if: matrix.use_docker
         run: |
           if [ "${{ inputs.build_profile }}" = "release" ]; then
             PROFILE="release"
@@ -121,6 +135,34 @@ jobs:
           # Verify glibc version requirement
           echo "GLIBC requirements:"
           strings artifacts/${{ matrix.binary_name }}-${{ matrix.target }} | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 || echo "No GLIBC symbols found"
+
+      - name: Install Rust
+        if: ${{ !matrix.use_docker }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build ${{ matrix.package }} natively
+        if: ${{ !matrix.use_docker }}
+        run: |
+          if [ "${{ inputs.build_profile }}" = "release" ]; then
+            cargo build --release --package ${{ matrix.package }} --features manager
+          else
+            cargo build --package ${{ matrix.package }} --features manager
+          fi
+
+          # Copy binary to artifacts
+          mkdir -p artifacts
+          if [ "${{ inputs.build_profile }}" = "release" ]; then
+            cp target/release/${{ matrix.binary_name }} artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
+          else
+            cp target/debug/${{ matrix.binary_name }} artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
+          fi
+          chmod +x artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
+
+          # Show info
+          echo "Build profile: ${{ inputs.build_profile }}"
+          echo "Binary: ${{ matrix.binary_name }}-${{ matrix.target }}"
+          ls -lh artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
+          file artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -317,24 +359,29 @@ jobs:
             ## Release v${{ needs.read-version.outputs.version }}
 
             ### Binaries
-            This release includes the following binaries for Linux:
 
-            **m87 (client)**
+            **m87 (client) - Linux**
             - `m87-x86_64-unknown-linux-gnu` - x86_64/AMD64 architecture
             - `m87-aarch64-unknown-linux-gnu` - ARM64 architecture
 
-            **m87-server**
+            **m87 (client) - macOS**
+            - `m87-aarch64-apple-darwin` - Apple Silicon (ARM64)
+
+            **m87-server - Linux**
             - `m87-server-x86_64-unknown-linux-gnu` - x86_64/AMD64 architecture
             - `m87-server-aarch64-unknown-linux-gnu` - ARM64 architecture
 
-            Download the appropriate binary for your system architecture.
+            Download the appropriate binary for your system and architecture.
 
             ### Docker Images
             Multi-arch Docker images are available at `ghcr.io/make87/m87-server`
-
+            
             Supported architectures: linux/amd64, linux/arm64
 
             See available tags at: https://github.com/make87/make87/pkgs/container/m87-server
+            
+            ### Docker Compose
+            Run a full Docker Compose stack from `ghcr.io/make87/m87-server-compose` to also start dependencies like mongoDB.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
