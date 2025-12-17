@@ -71,12 +71,17 @@ pub async fn connect_device_ssh(device_name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn exec_ssh(device: &str, args: &[String]) -> Result<()> {
+pub fn exec_ssh(target: &str, args: &[String]) -> Result<()> {
+    let host = if target.contains('.') {
+        target.to_string()
+    } else {
+        format!("{target}.m87")
+    };
+
     let status = std::process::Command::new("ssh")
-        .arg(format!("{device}@make87"))
+        .arg(host)
         .args(args)
-        .status()
-        .context("failed to launch ssh")?;
+        .status()?;
 
     if !status.success() {
         anyhow::bail!("ssh exited with {}", status);
@@ -85,8 +90,8 @@ pub fn exec_ssh(device: &str, args: &[String]) -> Result<()> {
 }
 
 const M87_SSH_BLOCK: &str = r#"
-Host make87
-  ProxyCommand m87 ssh %r --transport
+Host *.m87
+    ProxyCommand m87 ssh %h %r --transport
 "#;
 
 fn ssh_config_path() -> Result<PathBuf> {
