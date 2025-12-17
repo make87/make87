@@ -62,7 +62,7 @@ m87 sync --watch ./src <device>:/dst
 
 ```
 m87 ssh enable                 # enable ssh host resolving
-ssh <device>@make87            # now you can use ssh like you would normally
+ssh <device>.m87               # now you can use ssh like you would normally
 ```
 
 ### Device Management

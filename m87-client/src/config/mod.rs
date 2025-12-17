@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf};
 use tracing::{error, info, warn};
 
 #[cfg(feature = "agent")]
-use crate::{util::mac};
+use crate::util::mac;
 
 fn default_heartbeat_interval() -> u64 {
     300 // 5 min
@@ -158,7 +158,7 @@ impl Config {
         Ok(())
     }
 
-    fn config_file_path() -> Result<PathBuf> {
+    pub fn config_file_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir().context("Failed to get config directory")?;
         Ok(config_dir.join("m87").join("config.json"))
     }

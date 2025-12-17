@@ -3,6 +3,7 @@ use anyhow::bail;
 use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::auth;
+use crate::config::Config;
 use crate::device;
 use crate::device::serial;
 use crate::device::tunnel;
@@ -130,6 +131,34 @@ enum Commands {
 
     #[command(subcommand)]
     Ssh(SshCommands),
+
+    #[command(subcommand)]
+    Config(ConfigCommands),
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    Set {
+        /// Override API URL (e.g. https://eu.public.make87.dev)
+        #[arg(long)]
+        api_url: Option<String>,
+
+        /// Set owner reference (email or org id)
+        #[arg(long)]
+        owner_reference: Option<String>,
+
+        #[arg(long)]
+        make87_api_url: Option<String>,
+
+        #[arg(long)]
+        make87_app_url: Option<String>,
+
+        #[arg(long)]
+        trust_invalid_server_cert: Option<bool>,
+    },
+
+    Show,
+    File,
 }
 
 #[derive(Subcommand)]
@@ -279,6 +308,10 @@ pub async fn cli() -> anyhow::Result<()> {
             verbose = true;
             false
         }
+        Commands::Ssh(SshCommands::Connect(_)) => {
+            verbose = false;
+            false
+        }
 
         // Everything else is CLI UX
         _ => true,
@@ -324,26 +357,29 @@ pub async fn cli() -> anyhow::Result<()> {
                 }
 
                 let mut transport = false;
-                let mut rest = Vec::new();
+                let mut positional = Vec::new();
 
                 for arg in args {
                     if arg == "--transport" {
                         transport = true;
                     } else {
-                        rest.push(arg);
+                        positional.push(arg);
                     }
                 }
 
-                let device = rest.first().context("missing ssh target")?.as_str();
+                let host = positional.get(0).context("missing ssh host")?;
 
-                let forwarded_args = &rest[1..];
+                let _user = positional.get(1); // ignored for now
 
+                let device = host.strip_suffix(".m87").unwrap_or(host);
+                println!("Connecting to device {}", device);
+                tracing::info!("[done]");
                 if transport {
-                    // INTERNAL PATH — raw transport
+                    // INTERNAL: ProxyCommand path
                     device::ssh::connect_device_ssh(device).await?;
                 } else {
-                    // USER PATH — behaves exactly like ssh
-                    device::ssh::exec_ssh(device, forwarded_args)?;
+                    // USER: behave exactly like ssh
+                    device::ssh::exec_ssh(host, &positional[1..])?;
                 }
             }
         },
@@ -462,7 +498,6 @@ pub async fn cli() -> anyhow::Result<()> {
             let resp = device::fs::list(&path).await?;
             tui::fs::print_dir_entries(&resp);
         }
-
         Commands::Device(args) => {
             let parsed = match DeviceRoot::try_parse_from(
                 std::iter::once("m87").chain(args.iter().map(|s| s.as_str())),
@@ -472,6 +507,51 @@ pub async fn cli() -> anyhow::Result<()> {
             };
             handle_device_command(parsed).await?;
         }
+
+        Commands::Config(cmd) => match cmd {
+            ConfigCommands::Set {
+                api_url,
+                owner_reference,
+                make87_api_url,
+                make87_app_url,
+                trust_invalid_server_cert,
+            } => {
+                let mut cfg = Config::load().context("Failed to load config")?;
+
+                if let Some(url) = api_url {
+                    cfg.api_url = Some(url);
+                }
+
+                if let Some(owner) = owner_reference {
+                    cfg.owner_reference = Some(owner);
+                }
+
+                if let Some(url) = make87_api_url {
+                    cfg.make87_api_url = url;
+                }
+
+                if let Some(url) = make87_app_url {
+                    cfg.make87_app_url = url;
+                }
+
+                if let Some(trust) = trust_invalid_server_cert {
+                    cfg.trust_invalid_server_cert = trust;
+                }
+
+                cfg.save().context("Failed to save config")?;
+                tracing::info!("[done] Config updated");
+            }
+            ConfigCommands::Show => {
+                let cfg = Config::load().context("Failed to load config")?;
+                tracing::info!("[done] Config laoded");
+                println!("{:#?}", cfg);
+            }
+            ConfigCommands::File => {
+                let path = Config::config_file_path().context("Failed to get config path")?;
+                tracing::info!("[done] Config path loaded");
+                println!("{:#?}", path);
+            }
+        },
     }
 
     Ok(())
