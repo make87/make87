@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       build_profile:
-        description: 'Build profile'
+        description: "Build profile"
         required: true
-        default: 'release'
+        default: "release"
         type: choice
         options:
           - release
@@ -54,20 +54,20 @@ jobs:
       matrix:
         include:
           # AMD64 builds
-          - runner: ubuntu-24.04-amd64-2
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             arch: amd64
             package: m87-client
-          - runner: ubuntu-24.04-amd64-2
+          - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             arch: amd64
             package: m87-server
           # ARM64 builds
-          - runner: ubuntu-24.04-arm64-2
+          - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             arch: arm64
             package: m87-client
-          - runner: ubuntu-24.04-arm64-2
+          - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             arch: arm64
             package: m87-server
@@ -192,10 +192,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: ubuntu-24.04-amd64-2
+          - runner: ubuntu-24.04
             arch: amd64
             platform: linux/amd64
-          - runner: ubuntu-24.04-arm64-2
+          - runner: ubuntu-24.04-arm
             arch: arm64
             platform: linux/arm64
     steps:
