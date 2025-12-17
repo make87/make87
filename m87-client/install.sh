@@ -239,9 +239,10 @@ main() {
     success "make87 has been installed successfully!"
     echo ""
     echo "Get started with:"
-    echo "  $BINARY_NAME --help          # Show all commands"
-    echo "  $BINARY_NAME login           # Authenticate with make87"
-    echo "  $BINARY_NAME device install   # Install as system service"
+    echo "  $BINARY_NAME --help               # Show all commands"
+    echo "  $BINARY_NAME login                # Authenticate if you plan to use as manager"
+    echo "  $BINARY_NAME agent login          # Authenticate if you plan to run as agent"
+    echo "  $BINARY_NAME agent enable --now   # Install as system service"
     echo ""
 }
 

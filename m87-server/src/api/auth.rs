@@ -1,7 +1,7 @@
 use axum::extract::State;
 use axum::{
-    routing::{get, post},
     Json, Router,
+    routing::{get, post},
 };
 use mongodb::bson::doc;
 use tokio::join;
@@ -104,14 +104,10 @@ async fn check_auth_request(
         CreateApiKey {
             name: format!("{}-key", request.device_info.hostname),
             ttl_secs: None, // for now never expire
-            scopes: vec![
-                (
-                    format!("device:{}", request.device_id.clone()),
-                    Role::Editor,
-                ),
-                // grant read access to all the owners pub ssh keys
-                (format!("ssh:{}", owner_id), Role::Viewer),
-            ],
+            scopes: vec![(
+                format!("device:{}", request.device_id.clone()),
+                Role::Editor,
+            )],
         },
     )
     .await?;
