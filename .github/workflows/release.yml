@@ -97,17 +97,19 @@ jobs:
             PROFILE="debug"
           fi
 
-          # Build only the builder stage and extract binary
-          docker buildx build \
+          # Build the full image (runtime stage)
+          docker build \
             --file ${{ matrix.dockerfile }} \
             --build-arg BUILD_PROFILE=$PROFILE \
-            --target builder \
-            --output type=local,dest=./build-output \
+            -t ${{ matrix.package }}:build \
             .
 
-          # Copy binary to artifacts
+          # Extract binary using docker cp
           mkdir -p artifacts
-          cp build-output/workspace/target/$PROFILE/${{ matrix.binary_name }} artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
+          docker create --name tmp-extract ${{ matrix.package }}:build
+          docker cp tmp-extract:/app/${{ matrix.binary_name }} artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
+          docker rm tmp-extract
+
           chmod +x artifacts/${{ matrix.binary_name }}-${{ matrix.target }}
 
           # Show info
