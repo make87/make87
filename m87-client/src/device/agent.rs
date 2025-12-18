@@ -283,7 +283,6 @@ pub async fn status() -> Result<()> {
 }
 
 pub async fn run() -> Result<()> {
-    // init_logging("info", false, false);
     info!("Running device");
     let shutdown = signal::ctrl_c();
     pin!(shutdown);
