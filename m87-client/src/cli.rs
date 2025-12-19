@@ -500,7 +500,7 @@ pub async fn cli() -> anyhow::Result<()> {
 
         Commands::Version => {
             tracing::info!("[done]");
-            println!("Version: {}", env!("CARGO_PKG_VERSION"));
+        println!("Version: {}", env!("CARGO_PKG_VERSION"));
             println!("Build: {}", env!("GIT_COMMIT"));
             println!("Rust: {}", env!("RUSTC_VERSION"));
             println!(
