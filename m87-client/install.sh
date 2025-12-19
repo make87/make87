@@ -179,13 +179,29 @@ install_binary() {
 
 # Check if install directory is in PATH and print instructions if not
 check_path() {
+    # First check current PATH
     case ":$PATH:" in
         *":$INSTALL_DIR:"*)
             return 0  # Already in PATH
             ;;
     esac
 
-    # Not in PATH - print instructions
+    # Check if a new login shell would have it in PATH
+    # Use $SHELL to respect user's preferred shell (zsh, bash, fish, etc.)
+    # This handles .profile/.zshrc/.bashrc conditionals like: if [ -d "$HOME/.local/bin" ]; then PATH=...
+    # We get PATH from user's shell, then check it with POSIX tools (portable across bash/zsh/fish)
+    new_path=$("$SHELL" -l -c 'echo $PATH' 2>/dev/null) || true
+    if echo ":${new_path}:" | grep -q ":${INSTALL_DIR}:"; then
+        echo ""
+        success "$INSTALL_DIR will be in PATH after shell restart"
+        echo ""
+        echo "Run one of:"
+        echo "  exec \$SHELL -l    # Restart current shell"
+        echo "  source ~/.profile  # Reload profile"
+        return 0
+    fi
+
+    # Not in PATH and won't be automatically (or check failed) - show manual instructions
     echo ""
     warning "$INSTALL_DIR is not in your PATH"
     echo ""
