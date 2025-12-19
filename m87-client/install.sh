@@ -3,7 +3,7 @@ set -e
 
 # make87 installer script
 #
-# This script installs the m87 client binary to /usr/local/bin
+# This script installs the m87 client binary to ~/.local/bin (no sudo required)
 #
 # Usage:
 #   curl -fsSL https://github.com/make87/make87/releases/latest/download/install-client.sh | sh
@@ -13,12 +13,14 @@ set -e
 #   - Detects OS (Linux, macOS) and architecture (x86_64/aarch64)
 #   - Downloads specific version of m87 binary from GitHub releases
 #   - Verifies SHA256 checksum
-#   - Installs to /usr/local/bin/m87
+#   - Installs to ~/.local/bin/m87
+#   - Prints PATH instructions if needed
 #
 # Supported platforms:
 #   - Linux x86_64 (AMD64)
 #   - Linux aarch64 (ARM64)
 #   - macOS aarch64 (Apple Silicon)
+#   - Windows (via WSL)
 
 # Color codes for pretty output
 RED='\033[0;31m'
@@ -28,7 +30,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Installation configuration
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="$HOME/.local/bin"
 BINARY_NAME="m87"
 GITHUB_REPO="make87/make87"
 # This version is set during release - do not change manually
@@ -156,29 +158,47 @@ verify_checksum() {
     success "Checksum verified"
 }
 
-# Check if sudo is needed for installation
-needs_sudo() {
-    if [ -w "$INSTALL_DIR" ]; then
-        return 1  # Don't need sudo
-    else
-        return 0  # Need sudo
-    fi
-}
-
 # Install binary
 install_binary() {
     src="$1"
     dest="$INSTALL_DIR/$BINARY_NAME"
 
-    if needs_sudo; then
-        info "Installing to $dest (requires sudo)"
-        sudo install -m 755 "$src" "$dest"
-    else
-        info "Installing to $dest"
-        install -m 755 "$src" "$dest"
+    # Create install directory if it doesn't exist
+    if [ ! -d "$INSTALL_DIR" ]; then
+        info "Creating $INSTALL_DIR..."
+        mkdir -p "$INSTALL_DIR"
     fi
 
+    info "Installing to $dest"
+    install -m 755 "$src" "$dest"
+
     success "Installed $BINARY_NAME to $dest"
+}
+
+# Check if install directory is in PATH and print instructions if not
+check_path() {
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*)
+            return 0  # Already in PATH
+            ;;
+    esac
+
+    # Not in PATH - print instructions
+    echo ""
+    warning "$INSTALL_DIR is not in your PATH"
+    echo ""
+    echo "Add this line to your shell configuration file:"
+    echo ""
+    echo "  For bash (~/.bashrc or ~/.bash_profile):"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo ""
+    echo "  For zsh (~/.zshrc):"
+    echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo ""
+    echo "  For fish (~/.config/fish/config.fish):"
+    echo "    set -gx PATH \$HOME/.local/bin \$PATH"
+    echo ""
+    echo "Then restart your shell or run: source <config-file>"
 }
 
 # Main installation flow
@@ -244,7 +264,10 @@ main() {
     # Step 6: Install
     install_binary "$binary_path"
 
-    # Step 7: Verify installation
+    # Step 7: Check if PATH includes install directory
+    check_path
+
+    # Step 8: Verify installation
     info "Verifying installation..."
     if command -v "$BINARY_NAME" >/dev/null 2>&1; then
         installed_version=$("$BINARY_NAME" --version 2>/dev/null || echo "unknown")
