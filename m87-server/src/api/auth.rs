@@ -97,7 +97,7 @@ async fn check_auth_request(
         .map_err(|_| ServerError::internal_error("Failed to delete request"))?;
 
     // split owner_scope by : and take second part as owner_id
-    let owner_id = request.owner_scope.split(':').nth(1).unwrap().to_string();
+    // let owner_id = request.owner_scope.split(':').nth(1).unwrap().to_string();
 
     let (api_key_doc, api_key) = ApiKeyDoc::create(
         &state.db,
