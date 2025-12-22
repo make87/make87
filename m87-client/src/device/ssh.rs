@@ -12,20 +12,18 @@ use crate::{
     streams::{quic::open_quic_io, stream_type::StreamType},
 };
 
-// IMPORTANT:
 // This function is an SSH ProxyCommand transport.
 // It must NEVER spawn `ssh` or assume a TTY.
 pub async fn connect_device_ssh(device_name: &str) -> Result<()> {
     let config = Config::load()?;
-    let short_id = devices::resolve_device_short_id_cached(device_name).await?;
+    let resolved = devices::resolve_device_short_id_cached(device_name).await?;
 
     let token = AuthManager::get_cli_token().await?;
-    let hostname = config.get_server_hostname();
 
     let (conn, mut quic) = open_quic_io(
-        &hostname,
+        &resolved.host,
         &token,
-        &short_id,
+        &resolved.short_id,
         StreamType::Ssh {
             token: token.to_string(),
         },

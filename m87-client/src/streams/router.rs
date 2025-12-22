@@ -45,7 +45,7 @@ pub async fn handle_incoming_stream(
         }
         StreamType::Logs { .. } => {
             debug!("router: dispatching to logs handler");
-            handle_logs_io(&mut io).await;
+            let _ = handle_logs_io(&mut io).await;
         }
         StreamType::Tunnel { target, .. } => {
             debug!("router: dispatching to port forward handler");

@@ -1,4 +1,4 @@
-use std::fmt::{self, Write};
+use std::fmt::{self};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Once, OnceLock};
 
@@ -56,19 +56,20 @@ where
         event.record(&mut visitor);
         let msg = visitor.msg.trim_matches('"');
 
-        let meta = event.metadata();
-        let level = *meta.level();
-        let target = meta.target();
+        // let meta = event.metadata();
+        // let level = *meta.level();
+        // let target = meta.target();
 
         let cli_mode = CLI_MODE.load(Ordering::Relaxed);
+        // let verbose = VERBOSE.load(Ordering::Relaxed);
         let verbose = VERBOSE.load(Ordering::Relaxed);
 
         // Verbose = bypass renderer completely
         if verbose {
-            let ts = timestamp_hms();
-            let mut line = String::new();
-            let _ = write!(line, "[{}] {:?} [{}] {}", ts, level, target, msg);
-            let _ = self.tx.send(UiEvent::Line(line));
+            //     let ts = timestamp_hms();
+            //     let mut line = String::new();
+            //     let _ = write!(line, "[{}] {:?} [{}] {}", ts, level, target, msg);
+            let _ = self.tx.send(UiEvent::Line(msg.to_string()));
             return;
         }
 
@@ -109,24 +110,29 @@ pub fn init_tracing_with_log_layer(
         .or_else(|_| EnvFilter::try_new(default_level))
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if cli_mode {
-        // CLI UX
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(LogBroadcastLayer::new(tx.clone()))
-            .init();
-    } else if verbose {
-        // Debug agent locally
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(tracing_fmt::layer())
-            .init();
-    } else {
-        // Agent / daemon normal mode
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(LogBroadcastLayer::new(tx.clone()))
-            .init();
+    match (cli_mode, verbose) {
+        (_, true) => {
+            // Agent / daemon normal mode
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_fmt::layer())
+                .with(LogBroadcastLayer::new(tx.clone()))
+                .init();
+        }
+        (true, false) => {
+            // CLI UX
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(LogBroadcastLayer::new(tx.clone()))
+                .init();
+        }
+        (false, false) => {
+            // Agent / daemon normal mode
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_fmt::layer())
+                .init();
+        }
     }
 
     tx
@@ -138,10 +144,11 @@ pub fn init_logging(log_level: &str, cli_mode: bool, verbose: bool) {
     INIT.call_once(|| {
         let tx = init_tracing_with_log_layer(log_level, cli_mode, verbose);
         let rx = tx.subscribe();
-
-        tokio::spawn(async move {
-            crate::util::log_renderer::run_renderer(rx).await;
-        });
+        if cli_mode && !verbose {
+            tokio::spawn(async move {
+                crate::util::log_renderer::run_renderer(rx).await;
+            });
+        }
     });
 }
 

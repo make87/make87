@@ -1,11 +1,7 @@
-//! Remote command execution using the /exec endpoint.
-//!
-//! This provides clean command output without shell noise (MOTD, prompts, logout).
-
 use crate::streams::quic::open_quic_io;
 use crate::streams::stream_type::StreamType;
 use crate::{auth::AuthManager, config::Config, devices, util::shutdown::SHUTDOWN};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use termion::raw::IntoRawMode;
@@ -32,12 +28,8 @@ pub async fn run_exec(device: &str, command: Vec<String>, stdin: bool, tty: bool
     rustls::crypto::CryptoProvider::install_default(rustls::crypto::ring::default_provider()).ok();
 
     let config = Config::load()?;
-    let base = config.get_server_hostname();
-    let dev = devices::list_devices()
-        .await?
-        .into_iter()
-        .find(|d| d.name == device)
-        .ok_or_else(|| anyhow!("Device '{}' not found", device))?;
+
+    let resolved = devices::resolve_device_short_id_cached(device).await?;
 
     let token = AuthManager::get_cli_token().await?;
 
@@ -45,9 +37,9 @@ pub async fn run_exec(device: &str, command: Vec<String>, stdin: bool, tty: bool
         token: token.to_string(),
     };
     let (_, io) = open_quic_io(
-        &base,
+        &resolved.host,
         &token,
-        &dev.short_id,
+        &resolved.short_id,
         stream_type,
         config.trust_invalid_server_cert,
     )

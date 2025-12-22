@@ -2501,8 +2501,6 @@ dependencies = [
  "filetime",
  "futures",
  "futures-util",
- "hyper",
- "hyper-util",
  "jsonwebtoken",
  "libc",
  "m87-shared",

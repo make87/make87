@@ -54,17 +54,16 @@ impl LocalOrRemotePath {
 pub async fn open_sftp_session(device_name: &str) -> anyhow::Result<SftpSession> {
     let cfg = Config::load()?;
     let token = AuthManager::get_cli_token().await?;
-    let short_id = devices::resolve_device_short_id_cached(&device_name).await?;
-    let host = &cfg.get_server_hostname();
+    let resolved = devices::resolve_device_short_id_cached(&device_name).await?;
 
     // open raw tunnel through HTTPS upgrade
     let stream_type = StreamType::Ssh {
         token: token.to_string(),
     };
     let (_, io) = open_quic_io(
-        &host,
+        &resolved.host,
         &token,
-        &short_id,
+        &resolved.short_id,
         stream_type,
         cfg.trust_invalid_server_cert,
     )

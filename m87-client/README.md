@@ -44,9 +44,18 @@ m87 <device> shell             # interactive shell
 m87 <device> exec -- <cmd>     # run command
 m87 <device> tunnel <ports>    # port forwarding (see below)
 m87 <device> docker <args>     # docker passthrough
-m87 <device> logs [-f]         # container logs
+m87 <device> logs              # logs from the agent and observed containers
 m87 <device> stats             # system metrics
 m87 <device> serial <name>     # serial mount forwarding
+```
+
+### Remote Device Logs
+
+```
+m87 <device> observe docker <container_name>             # make the agent observe the container logs
+m87 <device> logs                                        # logs will now also show <container_name>
+m87 <device> observe docker <container_name> -r          # remove the container from the list of observed containers
+
 ```
 
 ### File Transfer

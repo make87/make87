@@ -1,8 +1,11 @@
 use futures::future::{AbortHandle, Abortable};
 use governor::{Quota, RateLimiter};
+use m87_shared::heartbeat::HeartbeatRequest;
 use m87_shared::roles::Role;
 use mongodb::bson::doc;
 use quinn::{ConnectionError, Endpoint};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -224,7 +227,6 @@ async fn handle_control_tunnel(
 ) -> ServerResult<()> {
     let device_id = device_short_id.to_string();
 
-    // Permission check
     claims
         .find_one_with_scope_and_role::<DeviceDoc>(
             &state.db.devices(),
@@ -234,41 +236,150 @@ async fn handle_control_tunnel(
         .await?
         .ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    // Atomically replace any existing tunnel
+    // ACCEPT CONTROL STREAM FIRST (don’t publish tunnel before it’s usable)
+    let (send, mut recv) =
+        match tokio::time::timeout(Duration::from_secs(20), conn.accept_bi()).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(_)) => {
+                conn.close(0u32.into(), b"control-stream-failed");
+                return Err(ServerError::internal_error("control stream failed"));
+            }
+            Err(_) => {
+                conn.close(0u32.into(), b"control-accept-timeout");
+                return Err(ServerError::internal_error("control stream accept timeout"));
+            }
+        };
+    let mut bf = [0u8; 1];
+    if recv.read_exact(&mut bf).await.is_err() {
+        conn.close(0u32.into(), b"control-stream-failed");
+        return Err(ServerError::internal_error(
+            "control stream failed. Expected 1 byte of data",
+        ));
+    }
+    // let Ok(send) = conn.open_uni().await else {
+    //     warn!(%device_id, "failed to open heartbeat stream");
+    //     conn.close(0u32.into(), b"control-stream-failed");
+    //     return Err(ServerError::internal_error(
+    //         "control stream failed. Could not open heartbeat stream",
+    //     ));
+    // };
+
+    // NOW publish as active tunnel
     state.relay.replace_tunnel(&device_id, conn.clone()).await;
 
-    // Wait until fully closed
-    let reason = conn.closed().await;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    match reason {
-        ConnectionError::ApplicationClosed(_) => {
-            info!(%device_id, "device gracefully closed");
+    let hb = tokio::spawn(run_heartbeat_loop(
+        recv,
+        send,
+        device_id.clone(),
+        claims.clone(),
+        state.clone(),
+        shutdown_rx,
+    ));
+
+    // Connection owner: only place that closes conn / awaits conn.closed()
+    tokio::select! {
+        reason = conn.closed() => {
+            let _ = shutdown_tx.send(true);
+            log_close_reason(&device_id, &reason);
         }
-        ConnectionError::ConnectionClosed(_) => {
-            warn!(%device_id, "device closed connection");
-        }
-        ConnectionError::LocallyClosed => {
-            info!(%device_id, "we closed connection locally");
-        }
-        ConnectionError::Reset => {
-            warn!(%device_id, "connection reset by peer");
-        }
-        ConnectionError::TransportError(err) => {
-            warn!(%device_id, "transport error: {}", err);
-        }
-        ConnectionError::TimedOut => {
-            warn!(%device_id, "device timed out");
-        }
-        ConnectionError::VersionMismatch | ConnectionError::CidsExhausted => {
-            warn!(%device_id, ?reason, "fatal QUIC error");
+        res = hb => {
+            warn!(%device_id, "heartbeat task exited: {:?}", res);
+            let _ = shutdown_tx.send(true);
+            conn.close(0u32.into(), b"heartbeat-exit");
+            let reason = conn.closed().await;
+            log_close_reason(&device_id, &reason);
         }
     }
 
-    // Clean up only if the closed conn is still the active tunnel
     state
         .relay
         .remove_if_match(&device_id, conn.stable_id())
         .await;
+
+    Ok(())
+}
+
+fn log_close_reason(device_id: &str, reason: &ConnectionError) {
+    match reason {
+        ConnectionError::ApplicationClosed(_) => info!(%device_id, "device gracefully closed"),
+        ConnectionError::ConnectionClosed(_) => warn!(%device_id, "device closed connection"),
+        ConnectionError::LocallyClosed => info!(%device_id, "we closed connection locally"),
+        ConnectionError::Reset => warn!(%device_id, "connection reset by peer"),
+        ConnectionError::TransportError(err) => warn!(%device_id, "transport error: {}", err),
+        ConnectionError::TimedOut => warn!(%device_id, "device timed out"),
+        ConnectionError::VersionMismatch | ConnectionError::CidsExhausted => {
+            warn!(%device_id, ?reason, "fatal QUIC error")
+        }
+    }
+}
+
+async fn run_heartbeat_loop(
+    mut recv: quinn::RecvStream,
+    mut send: quinn::SendStream,
+    device_id: String,
+    claims: Claims,
+    state: AppState,
+    mut shutdown: watch::Receiver<bool>,
+) -> ServerResult<()> {
+    const READ_TIMEOUT: Duration = Duration::from_secs(180);
+    const DEVICE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+    const HANDLE_TIMEOUT: Duration = Duration::from_secs(10);
+    const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => break,
+
+            msg = tokio::time::timeout(READ_TIMEOUT, read_msg::<HeartbeatRequest>(&mut recv)) => {
+                info!("heartbeat received");
+                let req = match msg {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
+                        warn!(%device_id, "heartbeat read error: {e}");
+                        break;
+                    }
+                    Err(_) => {
+                        warn!(%device_id, "heartbeat read timeout");
+                        break;
+                    }
+                };
+
+                let device_opt = tokio::time::timeout(
+                    DEVICE_LOOKUP_TIMEOUT,
+                    state.db.devices().find_one(doc!{ "short_id": &device_id }),
+                ).await
+                .map_err(|_| ServerError::internal_error("device lookup timeout"))??;
+
+                let Some(device) = device_opt else {
+                    warn!(%device_id, "device missing during heartbeat");
+                    break;
+                };
+
+                let body = tokio::time::timeout(
+                    HANDLE_TIMEOUT,
+                    device.handle_heartbeat(claims.clone(), &state.db, req),
+                ).await
+                .map_err(|_| ServerError::internal_error("handle_heartbeat timeout"))??;
+
+                info!("sending heartbeat response");
+                match tokio::time::timeout(WRITE_TIMEOUT, write_msg(&mut send, &body)).await {
+                    Ok(Ok(_)) => {
+                        info!("heartbeat response sent");
+                    }
+                    Ok(Err(e)) => {
+                        warn!(%device_id, "heartbeat write error: {e}");
+                        break;
+                    }
+                    Err(_) => {
+                        warn!(%device_id, "heartbeat write timeout");
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -521,4 +632,38 @@ fn spawn_udp_bridge(client: ClientConn, device: quinn::Connection, device_id: St
             }
         });
     }
+}
+
+pub async fn write_msg<T: Serialize>(io: &mut quinn::SendStream, msg: &T) -> ServerResult<()> {
+    let json = serde_json::to_vec(&msg)
+        .map_err(|e| ServerError::internal_error(&format!("failed to serialize message: {e}")))?;
+    let len = (json.len() as u32).to_be_bytes();
+
+    io.write_all(&len).await.map_err(|e| {
+        ServerError::internal_error(&format!("failed to write message length: {e}"))
+    })?;
+    io.write_all(&json)
+        .await
+        .map_err(|e| ServerError::internal_error(&format!("failed to write message body: {e}")))?;
+    Ok(())
+}
+
+pub async fn read_msg<T: DeserializeOwned>(io: &mut quinn::RecvStream) -> ServerResult<T> {
+    let mut len_buf = [0u8; 4];
+    io.read_exact(&mut len_buf)
+        .await
+        .map_err(|e| ServerError::internal_error(&format!("failed to read message length: {e}")))?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+
+    // json body
+    let mut buf = vec![0u8; len];
+    io.read_exact(&mut buf)
+        .await
+        .map_err(|e| ServerError::internal_error(&format!("failed to read message body: {e}")))?;
+
+    // deserialize directly into enum
+    let msg: T = serde_json::from_slice::<T>(&buf)
+        .map_err(|e| ServerError::internal_error(&format!("failed to deserialize message: {e}")))?;
+
+    Ok(msg)
 }

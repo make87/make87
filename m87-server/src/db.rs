@@ -2,13 +2,16 @@ use std::time::Duration;
 
 use crate::{
     models::{
-        api_key::ApiKeyDoc, device::DeviceDoc, device_auth_request::DeviceAuthRequestDoc,
-        roles::RoleDoc, user::UserDoc,
+        api_key::ApiKeyDoc,
+        device::{DeviceDoc, DeviceServicesDoc},
+        device_auth_request::DeviceAuthRequestDoc,
+        roles::RoleDoc,
+        user::UserDoc,
     },
     response::ServerResult,
 };
+use mongodb::{Client, Collection, IndexModel, options::ClientOptions};
 use mongodb::{bson::doc, options::IndexOptions};
-use mongodb::{options::ClientOptions, Client, Collection, IndexModel};
 
 #[derive(Clone)]
 pub struct Mongo {
@@ -49,6 +52,10 @@ impl Mongo {
 
     pub fn api_keys(&self) -> Collection<ApiKeyDoc> {
         self.col("api_keys")
+    }
+
+    pub fn services(&self) -> Collection<DeviceServicesDoc> {
+        self.col("device_services")
     }
 
     pub async fn ensure_indexes(&self) -> ServerResult<()> {
@@ -110,6 +117,10 @@ impl Mongo {
         // add index to users sub
         self.users()
             .create_index(IndexModel::builder().keys(doc! { "sub": 1 }).build())
+            .await?;
+
+        self.services()
+            .create_index(IndexModel::builder().keys(doc! { "device_id": 1 }).build())
             .await?;
 
         Ok(())

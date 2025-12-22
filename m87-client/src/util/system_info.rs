@@ -1,8 +1,8 @@
 use anyhow::Result;
 
+use m87_shared::device::DeviceSystemInfo;
 use sysinfo::System;
 
-use crate::server;
 use crate::util::network::get_public_ip;
 use libc::{geteuid, getpwuid};
 use std::ffi::CStr;
@@ -18,8 +18,8 @@ fn username() -> String {
     }
 }
 
-pub async fn get_system_info() -> Result<server::DeviceSystemInfo> {
-    let mut sys_info = server::DeviceSystemInfo {
+pub async fn get_system_info() -> Result<DeviceSystemInfo> {
+    let mut sys_info = DeviceSystemInfo {
         ..Default::default()
     };
 

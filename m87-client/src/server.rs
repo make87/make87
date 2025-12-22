@@ -1,16 +1,8 @@
-#[cfg(feature = "agent")]
-use anyhow::Context;
 use anyhow::{Result, anyhow};
-#[cfg(feature = "agent")]
-use m87_shared::metrics::SystemMetrics;
+use m87_shared::device::UpdateDeviceBody;
 use reqwest::Client;
 
-#[cfg(feature = "agent")]
-use tracing::{info,debug,warn};
 use tracing::error;
-
-#[cfg(feature = "agent")]
-use crate::{auth::AuthManager, config::Config, device::services::service_info::ServiceInfo};
 
 use crate::retry_async;
 // Import shared types
@@ -18,10 +10,8 @@ pub use m87_shared::auth::{
     AuthRequestAction, CheckAuthRequest, DeviceAuthRequest, DeviceAuthRequestBody,
     DeviceAuthRequestCheckResponse,
 };
-#[cfg(feature = "agent")]
-pub use m87_shared::device::UpdateDeviceBody;
-pub use m87_shared::device::{DeviceSystemInfo, PublicDevice};
-pub use m87_shared::heartbeat::{Digests, HeartbeatRequest, HeartbeatResponse};
+pub use m87_shared::device::PublicDevice;
+pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
 
 pub async fn get_server_url_and_owner_reference(
     make87_api_url: &str,
@@ -104,6 +94,31 @@ pub async fn get_server_url_and_owner_reference(
             return Err(anyhow::anyhow!("Timeout waiting for authentication"));
         }
     }
+}
+
+pub async fn get_manager_server_urls(make87_api_url: &str, token: &str) -> Result<Vec<String>> {
+    let client = reqwest::Client::new();
+
+    let get_url = format!("{}/v1/server", make87_api_url);
+    // get will return all server objects.. get url form each json object
+
+    #[derive(serde::Deserialize)]
+    struct Server {
+        url: String,
+    }
+
+    let response = client
+        .get(&get_url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<Server>>()
+        .await?;
+
+    let manager_urls = response.into_iter().map(|s| s.url).collect::<Vec<String>>();
+
+    Ok(manager_urls)
 }
 
 // Agent-specific: Used by device registration
@@ -227,9 +242,21 @@ pub async fn list_devices(
     }
 }
 
-// Agent-specific: Report device details to backend
-#[cfg(feature = "agent")]
-pub async fn report_device_details(
+fn get_client(trust_invalid_server_cert: bool) -> Result<Client> {
+    // if its localhost we accept invalid certificates
+    if trust_invalid_server_cert {
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()?;
+        Ok(client)
+    } else {
+        // otherwise we verify the certificate
+        let client = Client::new();
+        Ok(client)
+    }
+}
+
+pub async fn update_device(
     api_url: &str,
     token: &str,
     device_id: &str,
@@ -254,242 +281,5 @@ pub async fn report_device_details(
             eprintln!("[Device] Error reporting device details: {}", e);
             Err(anyhow!(e))
         }
-    }
-}
-
-// Agent-specific: Maintain persistent control tunnel connection
-#[cfg(feature = "agent")]
-pub async fn connect_control_tunnel() -> Result<()> {
-    use crate::streams::quic::get_quic_connection;
-    use crate::streams::udp_manager::UdpChannelManager;
-    use bytes::{BufMut, Bytes, BytesMut};
-    use m87_shared::device::short_device_id;
-    use quinn::Connection;
-    use tokio::sync::watch;
-
-    let config = Config::load().context("Failed to load configuration")?;
-    let token = AuthManager::get_device_token()?;
-    let short_id = short_device_id(&config.device_id);
-
-    let control_host = format!("control-{}.{}", short_id, config.get_server_hostname());
-    debug!("Connecting QUIC control tunnel to {}", control_host);
-
-    let (_endpoint, quic_conn): (_, Connection) =
-        get_quic_connection(&control_host, &token, config.trust_invalid_server_cert)
-            .await
-            .map_err(|e| {
-                error!("QUIC connect failed: {}", e);
-                e
-            })
-            .context("QUIC connect failed")?;
-
-    //  SHUTDOWN SIGNAL
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    //  CENTRAL STATE
-    let udp_channels = UdpChannelManager::new();
-
-    //  DATAGRAM OUTPUT PIPE (workers → QUIC)
-    let (datagram_tx, mut datagram_rx) = tokio::sync::mpsc::channel::<(u32, Bytes)>(2048);
-
-    // This task frames datagrams and sends via QUIC
-    {
-        let conn = quic_conn.clone();
-        let mut shutdown = shutdown_rx.clone();
-        let shutdown_tx = shutdown_tx.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown.changed() => break,
-
-                    Some((id, payload)) = datagram_rx.recv() => {
-                        let mut buf = BytesMut::with_capacity(4 + payload.len());
-                        buf.put_u32(id);
-                        buf.extend_from_slice(&payload);
-
-                        if conn.send_datagram(buf.freeze()).is_err() {
-                            warn!("send_datagram failed — shutting down");
-                            let _ = shutdown_tx.send(true);
-                            break;
-                        }
-                    }
-
-                    else => break,
-                }
-            }
-        });
-    }
-
-    //  DATAGRAM INPUT PIPE (QUIC → workers)
-    {
-        let udp_channels_clone = udp_channels.clone();
-        let conn = quic_conn.clone();
-        let mut shutdown = shutdown_rx.clone();
-        let shutdown_tx = shutdown_tx.clone();
-
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = shutdown.changed() => break,
-
-                    res = conn.read_datagram() => {
-                        let d = match res {
-                            Ok(d) => d,
-                            Err(_) => {
-                                let _ = shutdown_tx.send(true);
-                                break;
-                            }
-                        };
-
-                        if d.len() < 4 {
-                            continue;
-                        }
-
-                        let id = u32::from_be_bytes([d[0], d[1], d[2], d[3]]);
-                        let payload = Bytes::copy_from_slice(&d[4..]);
-
-                        if let Some(ch) = udp_channels_clone.get(id).await {
-                            let _ = ch.sender.try_send(payload);
-                        }
-                    }
-                }
-            }
-
-            udp_channels_clone.remove_all().await;
-        });
-    }
-
-    let mut shutdown = shutdown_rx.clone();
-    //  CONTROL STREAM ACCEPT LOOP
-    loop {
-        use crate::streams::{self, quic::QuicIo};
-
-        tokio::select! {
-
-            _ = shutdown.changed() => {
-                warn!("control tunnel shutting down");
-                break;
-            }
-            incoming = quic_conn.accept_bi() => {
-                match incoming {
-                    Ok((send, recv)) => {
-                        debug!("QUIC: new control stream accepted");
-
-                        let io = QuicIo { recv, send };
-                        let udp_channels_clone = udp_channels.clone();
-                        let datagram_tx_clone = datagram_tx.clone();
-
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                streams::router::handle_incoming_stream(
-                                    io, udp_channels_clone, datagram_tx_clone
-                                ).await
-                            {
-                                warn!("control stream error: {:?}", e);
-                            }
-                        });
-                    }
-
-                    Err(e) => {
-                        warn!("Control accept failed: {:?}", e);
-                        let _ = shutdown_tx.send(true);
-                        break;
-                    }
-                }
-            }
-
-            // QUIC connection closed
-            res = quic_conn.closed() => {
-                warn!("control tunnel closed by peer {:?}", res);
-                udp_channels.remove_all().await;
-                break;
-            }
-
-            // _ = tokio::time::sleep(Duration::from_secs(30)) => {
-            //     // Keepalive probe: if this errors out, conn is dead
-            //     if let Err(e) = quic_conn.open_uni().await {
-            //         warn!("keepalive probe failed, tunnel dead: {:?}", e);
-            //         udp_channels.remove_all().await;
-            //         break;
-            //     }
-            // }
-        }
-    }
-
-    let _ = shutdown_tx.send(true);
-    udp_channels.remove_all().await;
-    debug!("control tunnel terminated");
-    Ok(())
-}
-
-// Agent-specific: Send heartbeat with metrics and services
-#[cfg(feature = "agent")]
-pub async fn send_heartbeat(
-    last_instruction_hash: &str,
-    device_id: &str,
-    api_url: &str,
-    token: &str,
-    metrics: SystemMetrics,
-    services: Vec<ServiceInfo>,
-    trust_invalid_server_cert: bool,
-) -> Result<HeartbeatResponse> {
-    let req = HeartbeatRequest {
-        last_instruction_hash: last_instruction_hash.to_string(),
-        system: metrics,
-        services,
-    };
-
-    let client = get_client(trust_invalid_server_cert)?;
-    let url = format!("{}/device/{}/heartbeat", api_url, device_id);
-
-    let resp = client
-        .post(&url)
-        .bearer_auth(token)
-        .json(&req)
-        .send()
-        .await
-        .context("Failed to send heartbeat")?;
-
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .context("Failed to read heartbeat response body")?;
-
-    if !status.is_success() {
-        error!("Heartbeat request failed with status {}: {}", status, text);
-        return Err(anyhow::anyhow!(
-            "Heartbeat failed with status {}: {}",
-            status,
-            text
-        ));
-    }
-
-    // Try to decode JSON, log the body in case it fails
-    match serde_json::from_str::<HeartbeatResponse>(&text) {
-        Ok(decoded) => {
-            info!("Heartbeat sent successfully: {:?}", decoded);
-            Ok(decoded)
-        }
-        Err(err) => {
-            error!(
-                "Failed to decode heartbeat response: {}\nRaw response: {}",
-                err, text
-            );
-            Err(anyhow::anyhow!("Invalid heartbeat response: {}", err))
-        }
-    }
-}
-
-fn get_client(trust_invalid_server_cert: bool) -> Result<Client> {
-    // if its localhost we accept invalid certificates
-    if trust_invalid_server_cert {
-        let client = reqwest::Client::builder()
-            .danger_accept_invalid_certs(true)
-            .build()?;
-        Ok(client)
-    } else {
-        // otherwise we verify the certificate
-        let client = Client::new();
-        Ok(client)
     }
 }

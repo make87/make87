@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
+use m87_shared::services::ServiceInfo;
 use mongodb::bson::{DateTime, Document, doc, oid::ObjectId};
 
 use serde::{Deserialize, Serialize};
 
 // Import shared types
 pub use m87_shared::config::DeviceClientConfig;
-pub use m87_shared::device::{short_device_id, DeviceSystemInfo, PublicDevice};
+pub use m87_shared::device::{DeviceSystemInfo, PublicDevice, short_device_id};
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
 
 use crate::{
@@ -58,8 +59,9 @@ impl UpdateDeviceBody {
 
         if let Some(config) = &self.config {
             update_fields.insert("config", mongodb::bson::to_bson(config).unwrap());
-            // Force a compose recheck when config changes
-            update_fields.insert("current_compose_hash", mongodb::bson::Bson::Null);
+
+            let new_hash = config.get_hash().to_string();
+            update_fields.insert("last_instruction_hash", new_hash);
         }
 
         // Always set these system timestamps
@@ -101,6 +103,8 @@ pub struct DeviceDoc {
     pub system_info: DeviceSystemInfo,
     pub instruction_hash: i64,
     pub api_key_id: ObjectId,
+    #[serde(default)]
+    pub last_instruction_hash: String,
 }
 
 impl DeviceDoc {
@@ -137,6 +141,7 @@ impl DeviceDoc {
             system_info: create_body.system_info,
             instruction_hash: 0,
             api_key_id: create_body.api_key_id,
+            last_instruction_hash: "".to_string(),
         };
         let _ = db.devices().insert_one(node.clone()).await?;
         Ok(())
@@ -174,20 +179,80 @@ impl DeviceDoc {
     pub async fn handle_heartbeat(
         &self,
         _claims: Claims,
-        _db: &Arc<Mongo>,
-        _payload: HeartbeatRequest,
+        db: &Arc<Mongo>,
+        payload: HeartbeatRequest,
     ) -> ServerResult<HeartbeatResponse> {
-        // TODO: Process system metrics and services from payload
+        let mut update_fields = doc! {};
+        if let Some(sys_info) = payload.system_info {
+            update_fields.insert("system_info", mongodb::bson::to_bson(&sys_info).unwrap());
+        }
+        if let Some(client_version) = payload.client_version {
+            update_fields.insert("client_version", client_version);
+        }
+
+        if !update_fields.is_empty() {
+            update_fields.insert("updated_at", DateTime::now());
+        }
+
+        update_fields.insert("last_connection", DateTime::now());
+        let _ = db
+            .devices()
+            .update_one(
+                doc! {
+                    "device_id": self.id.unwrap()
+                },
+                doc! {
+                    "$set": update_fields
+                },
+            )
+            .await;
+
+        if let Some(services) = payload.services {
+            let _ = self.create_or_update_services(db, services).await;
+        }
         // TODO: Store or log the metrics for monitoring/alerting
 
-        // For now, return a basic response
-        let resp = HeartbeatResponse {
-            up_to_date: true,
-            compose_ref: None,
-            digests: None,
-        };
+        if payload.last_instruction_hash == self.last_instruction_hash {
+            return Ok(HeartbeatResponse {
+                up_to_date: true,
+                config: None,
+                instruction_hash: self.last_instruction_hash.clone(),
+            });
+        }
 
+        let resp = HeartbeatResponse {
+            up_to_date: false,
+            config: Some(self.config.clone()),
+            instruction_hash: self.last_instruction_hash.clone(),
+        };
         Ok(resp)
+    }
+
+    pub async fn get_services(&self, db: &Arc<Mongo>) -> ServerResult<Vec<ServiceInfo>> {
+        let services_doc = db
+            .services()
+            .find_one(doc! {"device_id": self.id.unwrap()})
+            .await?;
+        let Some(services_doc) = services_doc else {
+            return Ok(vec![]);
+        };
+        let services = services_doc.services;
+        Ok(services)
+    }
+
+    pub async fn create_or_update_services(
+        &self,
+        db: &Arc<Mongo>,
+        services: Vec<ServiceInfo>,
+    ) -> ServerResult<()> {
+        let _ = db
+            .services()
+            .update_one(
+                doc! {"device_id": self.id.unwrap()},
+                doc! {"$set": {"services": mongodb::bson::to_bson(&services).unwrap()}},
+            )
+            .await?;
+        Ok(())
     }
 }
 
@@ -228,5 +293,29 @@ impl AccessControlled for DeviceDoc {
     }
     fn allowed_scopes_field() -> Option<&'static str> {
         Some("allowed_scopes")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceServicesDoc {
+    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<ObjectId>,
+    pub device_id: String,
+    pub services: Vec<ServiceInfo>,
+}
+
+impl DeviceServicesDoc {
+    pub async fn create_from(
+        db: &Arc<Mongo>,
+        device_id: String,
+        services: Vec<ServiceInfo>,
+    ) -> ServerResult<Self> {
+        let doc = DeviceServicesDoc {
+            id: None,
+            device_id,
+            services,
+        };
+        let _ = db.services().insert_one(doc.clone()).await?;
+        Ok(doc)
     }
 }

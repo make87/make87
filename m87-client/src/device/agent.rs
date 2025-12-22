@@ -8,15 +8,10 @@ use tracing::{error, info, warn};
 use std::path::Path;
 use std::process::Command;
 
-use crate::{auth::AuthManager, config::Config};
-use crate::{
-    auth::register_device,
-    device::{services::collect_all_services, system_metrics::collect_system_metrics},
-    server,
-    util::tls::set_tls_provider,
-};
+use crate::config::Config;
+use crate::{auth::register_device, util::tls::set_tls_provider};
 
-use crate::server::send_heartbeat;
+use crate::device::control_tunnel;
 use crate::util::shutdown::SHUTDOWN;
 use crate::util::system_info::get_system_info;
 
@@ -89,40 +84,6 @@ WantedBy=multi-user.target
     }
 
     info!("Installed systemd service at {}", SERVICE_FILE);
-    Ok(())
-}
-
-/// Internal helper: Uninstall the systemd service file
-/// Not directly callable from CLI - used by other functions
-async fn uninstall_service() -> Result<()> {
-    if Path::new(SERVICE_FILE).exists() {
-        Command::new("systemctl")
-            .args(["stop", SERVICE_NAME])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .ok();
-        Command::new("systemctl")
-            .args(["disable", SERVICE_NAME])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .ok();
-        std::fs::remove_file(SERVICE_FILE).context("Failed to remove service file")?;
-        Command::new("systemctl")
-            .args(["daemon-reload"])
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()
-            .ok();
-        info!("Uninstalled m87 device service");
-    } else {
-        info!("Service not found, nothing to uninstall");
-    }
-
     Ok(())
 }
 
@@ -310,110 +271,31 @@ async fn login_and_run() -> Result<()> {
         }
         sleep(Duration::from_secs(1)).await;
     }
-    // reload config in case it changed during registration
-    let config = Config::load()?;
-    let token = AuthManager::get_device_token()?;
-    let res = report_device_details(
-        &config.get_server_url(),
-        &config.device_id,
-        &token,
-        config.trust_invalid_server_cert,
-    )
-    .await;
 
-    tokio::task::spawn(async {
-        loop {
-            if SHUTDOWN.is_cancelled() {
-                break;
-            }
-            info!("Starting control tunnel...");
-            tokio::select! {
-                result = server::connect_control_tunnel() => {
-                    match result {
-                        Err(e) => {
-                            error!("Control tunnel crashed with error: {e}. Reconnecting in 5 seconds...");
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                        }
-                        Ok(_) => {
-                            warn!("Control tunnel exited normally. Reconnecting...");
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                        }
-                    }
-                }
-                _ = SHUTDOWN.cancelled() => {
-                    info!("Control tunnel shutting down");
-                    break;
-                }
-            }
-        }
-    });
-
-    if let Err(e) = res {
-        warn!("Failed to report device details: {:?}", e.root_cause());
-    }
-
-    device_loop().await?;
-    Ok(())
-}
-
-async fn device_loop() -> Result<()> {
     loop {
         if SHUTDOWN.is_cancelled() {
             break;
         }
-        if let Err(e) = sync_with_backend().await {
-            error!("Sync failed: {:?}", e);
-        }
-        let config = Config::load().context("Failed to load configuration")?;
+        info!("Starting control tunnel...");
         tokio::select! {
-            _ = sleep(Duration::from_secs(config.heartbeat_interval_secs)) => {}
+            result = control_tunnel::connect_control_tunnel() => {
+                match result {
+                    Err(e) => {
+                        error!("Control tunnel crashed with error: {e}. Reconnecting in 5 seconds...");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                    Ok(_) => {
+                        warn!("Control tunnel exited normally. Reconnecting...");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
             _ = SHUTDOWN.cancelled() => {
+                info!("Control tunnel shutting down");
                 break;
             }
         }
     }
+
     Ok(())
-}
-
-async fn sync_with_backend() -> Result<()> {
-    info!("Syncing with backend...");
-
-    let config = Config::load().context("Failed to load configuration")?;
-    let last_instruciotn_hash = "";
-
-    let token = AuthManager::get_device_token()?;
-    let metrics = collect_system_metrics().await?;
-    let services = collect_all_services().await?;
-    if let Err(e) = send_heartbeat(
-        last_instruciotn_hash,
-        &config.device_id,
-        &config.get_server_url(),
-        &token,
-        metrics,
-        services,
-        config.trust_invalid_server_cert,
-    )
-    .await
-    {
-        warn!("Failed to send heartbeat: {:?}", e.root_cause());
-        return Ok(());
-    }
-    info!("Sync complete");
-    Ok(())
-}
-
-pub async fn report_device_details(
-    api_url: &str,
-    device_id: &str,
-    token: &str,
-    trust_invalid_server_cert: bool,
-) -> Result<()> {
-    info!("Reporting device details");
-
-    // Build update body
-    let body = server::UpdateDeviceBody {
-        client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        system_info: Some(get_system_info().await?),
-    };
-    server::report_device_details(api_url, token, device_id, body, trust_invalid_server_cert).await
 }

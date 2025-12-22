@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 
 pub async fn open_local_tunnel(device_name: &str, tunnel_specs: Vec<String>) -> Result<()> {
     let config = Config::load()?;
-    let device_short_id = devices::resolve_device_short_id_cached(device_name).await?;
+    let resolved = devices::resolve_device_short_id_cached(device_name).await?;
     let token = AuthManager::get_cli_token().await?;
     let trust = config.trust_invalid_server_cert;
 
@@ -27,12 +27,12 @@ pub async fn open_local_tunnel(device_name: &str, tunnel_specs: Vec<String>) -> 
 
     // spawn each tunnel as a background task
     for t in tunnels {
-        let host = config.get_server_hostname();
         let token = token.clone();
-        let device_short_id = device_short_id.clone();
-
+        let resolved = resolved.clone();
         tokio::spawn(async move {
-            if let Err(e) = tunnel_device_port(&host, &token, &device_short_id, t, trust).await {
+            if let Err(e) =
+                tunnel_device_port(&resolved.host, &token, &resolved.short_id, t, trust).await
+            {
                 error!("Tunnel exited with error: {}", e);
                 SHUTDOWN.cancel();
             }

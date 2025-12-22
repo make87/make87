@@ -10,9 +10,8 @@ use tokio::sync::mpsc;
 
 pub async fn run_shell(device: &str) -> Result<()> {
     let config = Config::load()?;
-    let base = config.get_server_hostname();
     tracing::info!("Resolving device address.");
-    let short_id = devices::resolve_device_short_id_cached(device).await?;
+    let resolved = devices::resolve_device_short_id_cached(device).await?;
 
     let token = AuthManager::get_cli_token().await?;
     let term = std::env::var("TERM").ok();
@@ -23,9 +22,9 @@ pub async fn run_shell(device: &str) -> Result<()> {
     };
     tracing::info!("Connecting to device.");
     let (_, io) = open_quic_io(
-        &base,
+        &resolved.host,
         &token,
-        &short_id,
+        &resolved.short_id,
         stream_type,
         config.trust_invalid_server_cert,
     )

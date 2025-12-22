@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::server;
+use crate::util::servers_parallel::{fanout_servers, find_on_servers};
 
 pub const OWNER_REFERENCE_ENV_VAR: &str = "OWNER_REFERENCE";
 pub const API_KEY_ENV_VAR: &str = "M87_API_KEY";
@@ -246,9 +247,24 @@ impl AuthManager {
 pub async fn login_cli() -> Result<()> {
     if AuthManager::has_cli_credentials()? {
         info!("Already logged in");
+
+        let _ = update_server_urls().await?;
         return Ok(());
     }
     let _ = AuthManager::login_cli().await;
+
+    let _ = update_server_urls().await?;
+    Ok(())
+}
+
+async fn update_server_urls() -> Result<()> {
+    let mut config = Config::load()?;
+    if config.manager_server_urls.is_empty() {
+        let token = AuthManager::get_cli_token().await?;
+        let urls = server::get_manager_server_urls(&config.make87_api_url, &token).await?;
+        config.manager_server_urls = urls;
+        config.save()?;
+    }
     Ok(())
 }
 
@@ -275,7 +291,7 @@ pub async fn register_device(
         })
         .or_else(|| std::env::var(OWNER_REFERENCE_ENV_VAR).ok());
 
-    let mut api_url = config.api_url.clone();
+    let mut api_url = config.agent_server_url.clone();
 
     // ------------------------------------------------------------
     // If either value is missing → call registration
@@ -292,8 +308,8 @@ pub async fn register_device(
         api_url = Some(resolved_api.clone());
         owner_scope = Some(resolved_owner.clone());
 
-        if config.api_url.is_none() {
-            config.api_url = Some(resolved_api);
+        if config.agent_server_url.is_none() {
+            config.agent_server_url = Some(resolved_api);
         }
         if config.owner_reference.is_none() {
             config.owner_reference = Some(resolved_owner);
@@ -354,25 +370,30 @@ pub async fn logout_device() -> Result<()> {
     AuthManager::delete_device_credentials().await
 }
 
-// Manager-specific: List pending device auth requests
 pub async fn list_auth_requests() -> Result<Vec<server::DeviceAuthRequest>> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
-    server::list_auth_requests(
-        &config.get_server_url(),
-        &token,
-        config.trust_invalid_server_cert,
-    )
-    .await
+    let trust = config.trust_invalid_server_cert;
+
+    let requests = fanout_servers(config.manager_server_urls, 4, |server_url| {
+        let token = token.clone();
+        async move { server::list_auth_requests(&server_url, &token, trust).await }
+    })
+    .await?
+    .iter()
+    .map(|f| f.1.clone())
+    .collect();
+    Ok(requests)
 }
 
-// Manager-specific: Approve device registration
 pub async fn accept_auth_request(request_id: &str) -> Result<()> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
 
+    let (server_url, _) = resolve_request_server(request_id).await?;
+
     server::handle_auth_request(
-        &config.get_server_url(),
+        &server_url,
         &token,
         request_id,
         true,
@@ -381,17 +402,47 @@ pub async fn accept_auth_request(request_id: &str) -> Result<()> {
     .await
 }
 
-// Manager-specific: Reject device registration
 pub async fn reject_auth_request(request_id: &str) -> Result<()> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
 
+    let (server_url, _) = resolve_request_server(request_id).await?;
+
     server::handle_auth_request(
-        &config.get_server_url(),
+        &server_url,
         &token,
         request_id,
         false,
         config.trust_invalid_server_cert,
     )
     .await
+}
+
+pub struct AuthRequestWithServer {
+    pub server_url: String,
+    pub request: server::DeviceAuthRequest,
+}
+
+async fn resolve_request_server(request_id: &str) -> Result<(String, server::DeviceAuthRequest)> {
+    let token = AuthManager::get_cli_token().await?;
+    let config = Config::load()?;
+    let trust = config.trust_invalid_server_cert;
+
+    let found = find_on_servers(config.manager_server_urls, 4, |server_url| {
+        let token = token.clone();
+        let request_id = request_id.to_string();
+        async move {
+            let requests = server::list_auth_requests(&server_url, &token, trust).await?;
+
+            Ok(requests.into_iter().find(|r| r.request_id == request_id))
+        }
+    })
+    .await?;
+
+    found.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Auth request '{}' not found on any manager server",
+            request_id
+        )
+    })
 }

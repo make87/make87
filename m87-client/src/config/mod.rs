@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow};
+use m87_shared::config::ObservationConfig;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "agent")]
 use sha1::{Digest, Sha1};
@@ -11,10 +12,6 @@ use crate::util::mac;
 fn default_heartbeat_interval() -> u64 {
     300 // 5 min
 }
-fn default_update_check_interval() -> u64 {
-    3600 // 1h
-}
-
 fn default_make87_api_url() -> String {
     "https://api.make87.com".to_string()
 }
@@ -25,7 +22,8 @@ fn default_make87_app_url() -> String {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
-    pub api_url: Option<String>,
+    #[serde(default, rename = "agent_server_url", alias = "api_url")]
+    pub agent_server_url: Option<String>,
     #[serde(default = "default_make87_api_url")]
     pub make87_api_url: String,
     #[serde(default = "default_make87_app_url")]
@@ -35,32 +33,35 @@ pub struct Config {
     pub log_level: String,
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
-    #[serde(default = "default_update_check_interval")]
-    pub update_check_interval_secs: u64,
     pub owner_reference: Option<String>,
     pub auth_domain: String,
     pub auth_audience: String,
     pub auth_client_id: String,
-
     #[serde(default)]
     pub trust_invalid_server_cert: bool,
+
+    #[serde(default)]
+    pub manager_server_urls: Vec<String>,
+    #[serde(default)]
+    pub observe: ObservationConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            api_url: None,
+            agent_server_url: None,
             make87_api_url: "https://api.make87.com".to_string(),
             make87_app_url: "https://app.make87.com".to_string(),
             device_id: get_default_device_id(),
             log_level: "info".to_string(),
             heartbeat_interval_secs: default_heartbeat_interval(),
-            update_check_interval_secs: default_update_check_interval(),
             owner_reference: None,
             auth_domain: "https://auth.make87.com/".to_string(),
             auth_audience: "https://auth.make87.com".to_string(),
             auth_client_id: "E2J7xfFLgexzvhHhz4YqaJBy8Ys82SmM".to_string(),
             trust_invalid_server_cert: false,
+            manager_server_urls: vec![],
+            observe: ObservationConfig::default(),
         }
     }
 }
@@ -89,8 +90,8 @@ impl Config {
         Ok(())
     }
 
-    pub fn get_server_url(&self) -> String {
-        match &self.api_url {
+    pub fn get_agent_server_url(&self) -> String {
+        match &self.agent_server_url {
             Some(url) => url.clone(),
             None => {
                 error!("API URL not set. Make sure to login in order to set it!");
@@ -99,8 +100,8 @@ impl Config {
         }
     }
 
-    pub fn get_server_hostname(&self) -> String {
-        let url = self.get_server_url();
+    pub fn get_agent_server_hostname(&self) -> String {
+        let url = self.get_agent_server_url();
         url.trim_start_matches("https://")
             .trim_start_matches("http://")
             .to_string()
@@ -193,7 +194,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.api_url, None);
+        assert_eq!(config.agent_server_url, None);
         assert_eq!(config.log_level, "info");
     }
 
@@ -202,6 +203,6 @@ mod tests {
         let config = Config::default();
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: Config = serde_json::from_str(&json).unwrap();
-        assert_eq!(config.api_url, deserialized.api_url);
+        assert_eq!(config.agent_server_url, deserialized.agent_server_url);
     }
 }

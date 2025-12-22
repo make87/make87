@@ -1,14 +1,12 @@
 use axum::extract::{Path, State};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
+use m87_shared::services::ServiceInfo;
 use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
 
 use crate::auth::claims::Claims;
-use crate::models::device::{
-    DeviceDoc, HeartbeatRequest, HeartbeatResponse, PublicDevice, UpdateDeviceBody,
-};
-use crate::models::roles::Role;
+use crate::models::device::{DeviceDoc, PublicDevice, UpdateDeviceBody};
 use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
 use crate::util::app_state::AppState;
 use crate::util::pagination::RequestPagination;
@@ -22,7 +20,7 @@ pub fn create_route() -> Router<AppState> {
                 .post(update_device_by_id)
                 .delete(delete_device),
         )
-        .route("/{id}/heartbeat", post(post_heartbeat))
+        .route("/{id}/services", get(get_services))
 }
 
 async fn get_devices(
@@ -127,22 +125,21 @@ async fn delete_device(
         .build())
 }
 
-async fn post_heartbeat(
+async fn get_services(
     claims: Claims,
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(payload): Json<HeartbeatRequest>,
-) -> ServerAppResult<HeartbeatResponse> {
-    let device = claims
-        .find_one_with_scope_and_role::<DeviceDoc>(
-            &state.db.devices(),
-            doc! { "_id": ObjectId::parse_str(&id)? },
-            Role::Editor,
-        )
-        .await?
-        .ok_or_else(|| ServerError::not_found("Device not found"))?;
+) -> ServerAppResult<Vec<ServiceInfo>> {
+    let device_oid = ObjectId::parse_str(&id)?;
+    let device_opt = claims
+        .find_one_with_access(&state.db.devices(), doc! { "_id": device_oid })
+        .await?;
+    let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    let body = device.handle_heartbeat(claims, &state.db, payload).await?;
-    let res = ServerResponse::builder().body(body).ok().build();
-    Ok(res)
+    let services = device.get_services(&state.db).await?;
+
+    Ok(ServerResponse::builder()
+        .body(services)
+        .status_code(axum::http::StatusCode::OK)
+        .build())
 }

@@ -141,7 +141,7 @@ enum ConfigCommands {
     Set {
         /// Override API URL (e.g. https://eu.public.make87.dev)
         #[arg(long)]
-        api_url: Option<String>,
+        agent_server_url: Option<String>,
 
         /// Set owner reference (email or org id)
         #[arg(long)]
@@ -218,6 +218,21 @@ pub enum DeviceCommand {
         path: String,
         /// Optional baud rate (defaults to 115200)
         baud: Option<u32>,
+    },
+
+    /// Observe device logs
+    #[command(subcommand)]
+    Observe(DeviceObserveCommand),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeviceObserveCommand {
+    List,
+    Docker {
+        name: String,
+        /// optional flag to remove the service
+        #[arg(short = 'r', long, default_value_t = false)]
+        remove: bool,
     },
 }
 
@@ -427,7 +442,7 @@ pub async fn cli() -> anyhow::Result<()> {
         Commands::Devices(cmd) => match cmd {
             DevicesCommands::List => {
                 let devices = devices::list_devices().await?;
-                let requests = devices::list_auth_requests().await?;
+                let requests = auth::list_auth_requests().await?;
                 tui::devices::print_devices_table(&devices, &requests);
             }
             DevicesCommands::Show { device } => {
@@ -514,7 +529,7 @@ pub async fn cli() -> anyhow::Result<()> {
 
         Commands::Config(cmd) => match cmd {
             ConfigCommands::Set {
-                api_url,
+                agent_server_url: api_url,
                 owner_reference,
                 make87_api_url,
                 make87_app_url,
@@ -523,7 +538,7 @@ pub async fn cli() -> anyhow::Result<()> {
                 let mut cfg = Config::load().context("Failed to load config")?;
 
                 if let Some(url) = api_url {
-                    cfg.api_url = Some(url);
+                    cfg.agent_server_url = Some(url);
                 }
 
                 if let Some(owner) = owner_reference {
@@ -605,5 +620,24 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             serial::open_serial(&device, &path, baud).await?;
             Ok(())
         }
+
+        DeviceCommand::Observe(command) => match command {
+            DeviceObserveCommand::List => {
+                let device = devices::get_device_by_name(&device).await?;
+                tui::devices::print_dive_observe_config(&device);
+                Ok(())
+            }
+            DeviceObserveCommand::Docker { name, remove } => {
+                if devices::update_observe_config(&device, &name, remove)
+                    .await
+                    .is_ok()
+                {
+                    tracing::info!("[done] updated observe config");
+                } else {
+                    tracing::error!("[error] failed to update observe config");
+                }
+                Ok(())
+            }
+        },
     }
 }

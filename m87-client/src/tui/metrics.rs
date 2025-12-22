@@ -25,8 +25,8 @@ pub async fn run_metrics(device: &str) -> Result<()> {
 
 async fn run_metrics_inner(device: &str) -> Result<()> {
     let config = Config::load()?;
-    let host = config.get_server_hostname();
-    let short_id = devices::resolve_device_short_id_cached(device).await?;
+    // let host = config.get_agent_server_hostname();
+    let resolved = devices::resolve_device_short_id_cached(device).await?;
     let token = AuthManager::get_cli_token().await?;
 
     let stream_type = StreamType::Metrics {
@@ -34,9 +34,9 @@ async fn run_metrics_inner(device: &str) -> Result<()> {
     };
 
     let (conn, io) = open_quic_io(
-        &host,
+        &resolved.host,
         &token,
-        &short_id,
+        &resolved.short_id,
         stream_type,
         config.trust_invalid_server_cert,
     )

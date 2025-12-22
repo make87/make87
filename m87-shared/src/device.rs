@@ -74,4 +74,5 @@ impl Hash for DeviceSystemInfo {
 pub struct UpdateDeviceBody {
     pub system_info: Option<DeviceSystemInfo>,
     pub client_version: Option<String>,
+    pub config: Option<DeviceClientConfig>,
 }

@@ -17,13 +17,11 @@ pub struct CachedDevice {
     pub short_id: String,
     pub name: String,
     pub updated_at: u64,
+    pub server_url: String,
 }
 
 type DeviceCache = HashMap<String, Vec<CachedDevice>>;
 
-// --------------------------------------------------
-// Cache path (Linux / macOS / Windows)
-// --------------------------------------------------
 fn cache_path() -> Result<PathBuf> {
     let mut base = cache_dir().ok_or_else(|| anyhow!("Could not determine cache directory"))?;
     base.push("m87");
@@ -31,9 +29,6 @@ fn cache_path() -> Result<PathBuf> {
     Ok(base)
 }
 
-// --------------------------------------------------
-// Load cache
-// --------------------------------------------------
 pub fn load_cache() -> Result<DeviceCache> {
     let path = cache_path()?;
     if !path.exists() {
@@ -44,9 +39,6 @@ pub fn load_cache() -> Result<DeviceCache> {
     Ok(serde_json::from_slice(&data)?)
 }
 
-// --------------------------------------------------
-// Try cache (returns ALL valid entries for name)
-// --------------------------------------------------
 pub fn try_cache(name: &str) -> Result<Vec<CachedDevice>> {
     let cache = load_cache()?;
     let entries = match cache.get(name) {
@@ -65,10 +57,7 @@ pub fn try_cache(name: &str) -> Result<Vec<CachedDevice>> {
     Ok(valid)
 }
 
-// --------------------------------------------------
-// Update cache (append or refresh by id)
-// --------------------------------------------------
-pub fn update_cache(device: &PublicDevice) -> Result<()> {
+pub fn update_cache(device: &PublicDevice, server_url: &str) -> Result<()> {
     let mut cache = load_cache()?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
@@ -77,6 +66,7 @@ pub fn update_cache(device: &PublicDevice) -> Result<()> {
         short_id: device.short_id.clone(),
         name: device.name.clone(),
         updated_at: now,
+        server_url: server_url.to_string(),
     };
 
     let list = cache.entry(device.name.clone()).or_default();
@@ -98,7 +88,7 @@ pub fn update_cache(device: &PublicDevice) -> Result<()> {
     Ok(())
 }
 
-pub fn update_cache_bulk(devices: &[PublicDevice]) -> Result<()> {
+pub fn update_cache_bulk(devices: &[PublicDevice], server_url: &str) -> Result<()> {
     let mut cache = load_cache()?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
 
@@ -108,6 +98,7 @@ pub fn update_cache_bulk(devices: &[PublicDevice]) -> Result<()> {
             short_id: d.short_id.clone(),
             name: d.name.clone(),
             updated_at: now,
+            server_url: server_url.to_string(),
         };
 
         let list = cache.entry(d.name.clone()).or_default();
@@ -129,9 +120,6 @@ pub fn update_cache_bulk(devices: &[PublicDevice]) -> Result<()> {
     Ok(())
 }
 
-// --------------------------------------------------
-// Atomic write helper
-// --------------------------------------------------
 fn write_atomic(path: &PathBuf, data: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, data)?;

@@ -240,7 +240,7 @@ impl Claims {
             let doc = coll
                 .find_one(base_filter)
                 .await
-                .map_err(|_| ServerError::internal_error("DB query failed"))?;
+                .map_err(|e| ServerError::internal_error(&format!("DB query failed: {}", e)))?;
             return Ok(doc);
         }
 
@@ -262,7 +262,7 @@ impl Claims {
         let doc = coll
             .find_one(filter)
             .await
-            .map_err(|_| ServerError::internal_error("DB query failed"))?;
+            .map_err(|e| ServerError::internal_error(&format!("DB query failed: {}", e)))?;
 
         if doc.is_none() {
             return Err(ServerError::forbidden("Not found or access denied"));

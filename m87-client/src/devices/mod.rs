@@ -1,32 +1,32 @@
 use std::io::{self, Write};
 
 use anyhow::{Result, anyhow};
-use m87_shared::{auth::DeviceAuthRequest, device::PublicDevice};
+use m87_shared::device::{PublicDevice, UpdateDeviceBody};
 use tracing::warn;
 
 use crate::util::device_cache;
+use crate::util::servers_parallel::fanout_servers;
 use crate::{auth::AuthManager, config::Config, server};
 
 pub async fn list_devices() -> Result<Vec<PublicDevice>> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
-    server::list_devices(
-        &config.get_server_url(),
-        &token,
-        config.trust_invalid_server_cert,
-    )
-    .await
-}
+    let trust = config.trust_invalid_server_cert;
 
-pub async fn list_auth_requests() -> Result<Vec<DeviceAuthRequest>> {
-    let token = AuthManager::get_cli_token().await?;
-    let config = Config::load()?;
-    server::list_auth_requests(
-        &config.get_server_url(),
-        &token,
-        config.trust_invalid_server_cert,
-    )
-    .await
+    let results = fanout_servers(config.manager_server_urls, 4, |server_url| {
+        let token = token.clone();
+        async move { server::list_devices(&server_url, &token, trust).await }
+    })
+    .await?;
+
+    let mut out = Vec::new();
+
+    for (server_url, device) in results {
+        device_cache::update_cache(&device, &server_url)?;
+        out.push(device);
+    }
+
+    Ok(out)
 }
 
 pub async fn get_device_by_name(name: &str) -> Result<PublicDevice> {
@@ -43,46 +43,34 @@ pub async fn get_device_by_name(name: &str) -> Result<PublicDevice> {
         .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", name))
 }
 
-pub async fn resolve_device_short_id_cached(name: &str) -> Result<String> {
+pub async fn resolve_device_short_id_cached(name: &str) -> Result<ResolvedDevice> {
+    // 1) try cache first
     let cached = device_cache::try_cache(name)?;
 
-    match cached.len() {
-        1 => return Ok(cached[0].short_id.clone()),
-        n if n > 1 => return prompt_cached_selection(name, cached),
-        _ => {}
+    if let Some(res) = select_from_cache(name, cached)? {
+        return Ok(res);
     }
 
-    let devices = list_devices().await?;
+    // 2) warm cache (parallel fan-out)
+    list_devices().await?;
 
-    // Warm cache with full device list
-    device_cache::update_cache_bulk(&devices)?;
+    // 3) re-read cache
+    let cached = device_cache::try_cache(name)?;
 
-    let matches: Vec<_> = devices.into_iter().filter(|d| d.name == name).collect();
-
-    match matches.len() {
-        0 => Err(anyhow!("Device '{}' not found", name)),
-        1 => {
-            let d = &matches[0];
-            if !d.online {
-                warn!("Device '{}' is offline", d.name);
-            }
-            Ok(d.short_id.clone())
-        }
-        _ => {
-            let d = prompt_device_selection(name, matches)?;
-            if !d.online {
-                warn!("Device '{}' is offline", d.name);
-            }
-            Ok(d.short_id)
-        }
-    }
+    select_from_cache(name, cached)?.ok_or_else(|| anyhow!("Device '{}' not found", name))
 }
 
 fn prompt_cached_selection(name: &str, devices: Vec<device_cache::CachedDevice>) -> Result<String> {
     println!("Multiple cached devices named '{}':", name);
 
     for (i, d) in devices.iter().enumerate() {
-        println!("  [{}] {} (id={})", i + 1, d.name, d.short_id);
+        println!(
+            "  [{}] {} (id={} server={})",
+            i + 1,
+            d.name,
+            d.short_id,
+            d.server_url
+        );
     }
 
     print!("Select device: ");
@@ -95,31 +83,6 @@ fn prompt_cached_selection(name: &str, devices: Vec<device_cache::CachedDevice>)
     Ok(selected.short_id.clone())
 }
 
-fn prompt_device_selection(name: &str, devices: Vec<PublicDevice>) -> Result<PublicDevice> {
-    println!("Multiple devices named '{}':", name);
-
-    for (i, d) in devices.iter().enumerate() {
-        println!(
-            "  [{}] {} (id={}, online={})",
-            i + 1,
-            d.name,
-            d.short_id,
-            d.online
-        );
-    }
-
-    print!("Select device: ");
-    let idx = read_user_index()?;
-
-    devices
-        .get(idx.saturating_sub(1))
-        .cloned()
-        .ok_or_else(|| anyhow!("Invalid selection"))
-}
-
-// --------------------------------------------------
-// User selection helper (used by caller)
-// --------------------------------------------------
 pub fn read_user_index() -> Result<usize> {
     let mut input = String::new();
     io::stdout().flush()?;
@@ -135,4 +98,68 @@ pub fn read_user_index() -> Result<usize> {
     }
 
     Ok(idx)
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedDevice {
+    pub short_id: String,
+    pub host: String,
+    pub url: String,
+}
+
+pub fn select_from_cache(
+    name: &str,
+    cached: Vec<device_cache::CachedDevice>,
+) -> Result<Option<ResolvedDevice>> {
+    match cached.len() {
+        0 => Ok(None),
+        1 => Ok(Some(to_resolved(&cached[0]))),
+        _ => {
+            let short_id = prompt_cached_selection(name, cached.clone())?;
+            let selected = cached
+                .into_iter()
+                .find(|d| d.short_id == short_id)
+                .ok_or_else(|| anyhow!("Invalid selection"))?;
+
+            Ok(Some(to_resolved(&selected)))
+        }
+    }
+}
+
+pub fn to_resolved(d: &device_cache::CachedDevice) -> ResolvedDevice {
+    ResolvedDevice {
+        short_id: d.short_id.clone(),
+        url: d.server_url.clone(),
+        host: d
+            .server_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .to_string(),
+    }
+}
+
+pub async fn update_observe_config(device: &str, name: &str, remove: bool) -> Result<()> {
+    let device_obj = get_device_by_name(&device).await?;
+    let mut config = device_obj.config.clone();
+    if remove {
+        config.observe.docker_services.retain(|s| s != &name);
+    } else {
+        config.observe.docker_services.push(name.to_string());
+    }
+    let update_device_body = UpdateDeviceBody {
+        config: Some(config),
+        ..Default::default()
+    };
+    let token = AuthManager::get_cli_token().await?;
+    let config = Config::load()?;
+    let resolved = resolve_device_short_id_cached(&device).await?;
+    server::update_device(
+        &resolved.url,
+        &token,
+        &device_obj.id,
+        update_device_body,
+        config.trust_invalid_server_cert,
+    )
+    .await?;
+    Ok(())
 }
