@@ -236,60 +236,31 @@ async fn handle_control_tunnel(
         .await?
         .ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    // ACCEPT CONTROL STREAM FIRST (don’t publish tunnel before it’s usable)
-    let (send, mut recv) =
-        match tokio::time::timeout(Duration::from_secs(20), conn.accept_bi()).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(_)) => {
-                conn.close(0u32.into(), b"control-stream-failed");
-                return Err(ServerError::internal_error("control stream failed"));
-            }
-            Err(_) => {
-                conn.close(0u32.into(), b"control-accept-timeout");
-                return Err(ServerError::internal_error("control stream accept timeout"));
-            }
-        };
-    let mut bf = [0u8; 1];
-    if recv.read_exact(&mut bf).await.is_err() {
-        conn.close(0u32.into(), b"control-stream-failed");
-        return Err(ServerError::internal_error(
-            "control stream failed. Expected 1 byte of data",
-        ));
-    }
-    // let Ok(send) = conn.open_uni().await else {
-    //     warn!(%device_id, "failed to open heartbeat stream");
-    //     conn.close(0u32.into(), b"control-stream-failed");
-    //     return Err(ServerError::internal_error(
-    //         "control stream failed. Could not open heartbeat stream",
-    //     ));
-    // };
-
     // NOW publish as active tunnel
     state.relay.replace_tunnel(&device_id, conn.clone()).await;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-
-    let hb = tokio::spawn(run_heartbeat_loop(
-        recv,
-        send,
-        device_id.clone(),
-        claims.clone(),
-        state.clone(),
-        shutdown_rx,
-    ));
-
     // Connection owner: only place that closes conn / awaits conn.closed()
-    tokio::select! {
-        reason = conn.closed() => {
-            let _ = shutdown_tx.send(true);
-            log_close_reason(&device_id, &reason);
-        }
-        res = hb => {
-            warn!(%device_id, "heartbeat task exited: {:?}", res);
-            let _ = shutdown_tx.send(true);
-            conn.close(0u32.into(), b"heartbeat-exit");
-            let reason = conn.closed().await;
-            log_close_reason(&device_id, &reason);
+    loop {
+        tokio::select! {
+            reason = conn.closed() => {
+                let _ = shutdown_tx.send(true);
+                log_close_reason(&device_id, &reason);
+                break;
+            }
+            res = conn.accept_bi() => {
+                if let Ok((send, recv)) = res {
+                    let shutdown = shutdown_rx.clone();
+                    tokio::spawn(run_heartbeat_loop(
+                        recv,
+                        send,
+                        device_id.clone(),
+                        claims.clone(),
+                        state.clone(),
+                        shutdown,
+                    ));
+                }
+            }
         }
     }
 
@@ -323,57 +294,43 @@ async fn run_heartbeat_loop(
     state: AppState,
     mut shutdown: watch::Receiver<bool>,
 ) -> ServerResult<()> {
-    const READ_TIMEOUT: Duration = Duration::from_secs(180);
-    const DEVICE_LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
-    const HANDLE_TIMEOUT: Duration = Duration::from_secs(10);
-    const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+    let mut bf = [0u8; 1];
+    if recv.read_exact(&mut bf).await.is_err() {
+        return Err(ServerError::internal_error(
+            "control stream failed. Expected 1 byte of data",
+        ));
+    }
 
     loop {
         tokio::select! {
             _ = shutdown.changed() => break,
 
-            msg = tokio::time::timeout(READ_TIMEOUT, read_msg::<HeartbeatRequest>(&mut recv)) => {
+            msg = read_msg::<HeartbeatRequest>(&mut recv) => {
                 info!("heartbeat received");
                 let req = match msg {
-                    Ok(Ok(r)) => r,
-                    Ok(Err(e)) => {
+                    Ok(r) => r,
+                    Err(e) => {
                         warn!(%device_id, "heartbeat read error: {e}");
-                        break;
-                    }
-                    Err(_) => {
-                        warn!(%device_id, "heartbeat read timeout");
                         break;
                     }
                 };
 
-                let device_opt = tokio::time::timeout(
-                    DEVICE_LOOKUP_TIMEOUT,
-                    state.db.devices().find_one(doc!{ "short_id": &device_id }),
-                ).await
-                .map_err(|_| ServerError::internal_error("device lookup timeout"))??;
+                let device_opt = state.db.devices().find_one(doc!{ "short_id": &device_id }).await?;
 
                 let Some(device) = device_opt else {
                     warn!(%device_id, "device missing during heartbeat");
                     break;
                 };
 
-                let body = tokio::time::timeout(
-                    HANDLE_TIMEOUT,
-                    device.handle_heartbeat(claims.clone(), &state.db, req),
-                ).await
-                .map_err(|_| ServerError::internal_error("handle_heartbeat timeout"))??;
+                let body = device.handle_heartbeat(claims.clone(), &state.db, req).await?;
 
                 info!("sending heartbeat response");
-                match tokio::time::timeout(WRITE_TIMEOUT, write_msg(&mut send, &body)).await {
-                    Ok(Ok(_)) => {
+                match write_msg(&mut send, &body).await {
+                    Ok(_) => {
                         info!("heartbeat response sent");
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         warn!(%device_id, "heartbeat write error: {e}");
-                        break;
-                    }
-                    Err(_) => {
-                        warn!(%device_id, "heartbeat write timeout");
                         break;
                     }
                 }
