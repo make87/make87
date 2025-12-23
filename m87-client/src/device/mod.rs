@@ -12,6 +12,7 @@ pub mod docker;
 pub mod fs;
 pub mod tunnel;
 
+#[cfg(feature = "agent")]
 mod control_tunnel;
 #[cfg(unix)] // won't compile on Windows because no PTY
 pub mod serial;
