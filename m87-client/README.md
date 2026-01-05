@@ -89,9 +89,10 @@ m87 update
 To make a device remotely accessible:
 
 ```
-m87 agent login           # register device with make87
-m87 agent run             # run agent (blocking)
+m87 agent run --email you@example.com   # register and run agent (waits for approval)
 ```
+
+Then approve the device from your workstation with `m87 devices approve <request-id>`.
 
 Or use systemd:
 
