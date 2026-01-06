@@ -446,3 +446,51 @@ async fn resolve_request_server(request_id: &str) -> Result<(String, server::Dev
         )
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_api_config_default_credentials_path() {
+        let path = APIConfig::default_credentials_path().unwrap();
+        let path_str = path.to_string_lossy();
+        assert!(path_str.ends_with("m87/credentials.json"));
+    }
+
+    #[test]
+    fn test_api_key_serialization() {
+        let api_key = APIKey {
+            api_key: "test_api_key_12345".to_string(),
+        };
+
+        let json = serde_json::to_string(&api_key).unwrap();
+        let deserialized: APIKey = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.api_key, "test_api_key_12345");
+    }
+
+    #[test]
+    fn test_credentials_api_key_variant() {
+        let credentials = Credentials::APIKey(APIKey {
+            api_key: "my_secret_key".to_string(),
+        });
+
+        let json = serde_json::to_string(&credentials).unwrap();
+        let deserialized: Credentials = serde_json::from_str(&json).unwrap();
+
+        match deserialized {
+            Credentials::APIKey(key) => {
+                assert_eq!(key.api_key, "my_secret_key");
+            }
+            _ => panic!("Expected APIKey variant"),
+        }
+    }
+
+    #[test]
+    fn test_api_config_default() {
+        let config = APIConfig::default();
+        assert!(config.credentials.is_none());
+        assert!(config.device_credentials.is_none());
+    }
+}

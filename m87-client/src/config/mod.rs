@@ -247,4 +247,42 @@ mod tests {
         let deserialized: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(config.agent_server_url, deserialized.agent_server_url);
     }
+
+    #[test]
+    fn test_get_agent_server_hostname_strips_https() {
+        let mut config = Config::default();
+        config.agent_server_url = Some("https://api.example.com".to_string());
+        assert_eq!(config.get_agent_server_hostname(), "api.example.com");
+    }
+
+    #[test]
+    fn test_get_agent_server_hostname_strips_http() {
+        let mut config = Config::default();
+        config.agent_server_url = Some("http://api.example.com".to_string());
+        assert_eq!(config.get_agent_server_hostname(), "api.example.com");
+    }
+
+    #[test]
+    fn test_get_agent_server_hostname_with_port() {
+        let mut config = Config::default();
+        config.agent_server_url = Some("https://api.example.com:8443".to_string());
+        assert_eq!(config.get_agent_server_hostname(), "api.example.com:8443");
+    }
+
+    #[test]
+    fn test_get_agent_server_hostname_no_protocol() {
+        let mut config = Config::default();
+        config.agent_server_url = Some("api.example.com".to_string());
+        assert_eq!(config.get_agent_server_hostname(), "api.example.com");
+    }
+
+    #[test]
+    fn test_default_heartbeat_interval() {
+        assert_eq!(default_heartbeat_interval(), 300);
+    }
+
+    #[test]
+    fn test_default_api_url() {
+        assert_eq!(default_make87_api_url(), "https://api.make87.com");
+    }
 }
