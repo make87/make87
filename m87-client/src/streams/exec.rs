@@ -205,6 +205,12 @@ where
     let _ = w.shutdown().await;
 }
 
+// Make get_shell testable by exposing it for tests
+#[cfg(test)]
+pub(crate) fn get_shell_for_test() -> String {
+    get_shell()
+}
+
 /// Run command with PTY - for TUI applications (vim, htop, etc.)
 async fn run_with_pty<R, W>(mut reader: R, writer: Arc<Mutex<W>>, config: ExecRequest)
 where
@@ -341,4 +347,62 @@ where
     let _ = child.kill();
     let mut w = writer.lock().await;
     let _ = w.shutdown().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_shell_returns_valid_path() {
+        let shell = get_shell_for_test();
+        // Should return either SHELL env var or fallback to /bin/sh
+        assert!(!shell.is_empty());
+        // On Unix, should be an absolute path or powershell on Windows
+        #[cfg(unix)]
+        assert!(shell.starts_with('/') || shell == "powershell.exe");
+    }
+
+    #[test]
+    fn test_exec_request_deserialization() {
+        let json = r#"{"command":"ls -la","tty":true}"#;
+        let req: ExecRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.command, "ls -la");
+        assert!(req.tty);
+    }
+
+    #[test]
+    fn test_exec_request_tty_default_false() {
+        let json = r#"{"command":"echo hello"}"#;
+        let req: ExecRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.command, "echo hello");
+        assert!(!req.tty); // default is false
+    }
+
+    #[test]
+    fn test_exec_request_invalid_json() {
+        let json = r#"{"invalid": true}"#;
+        let result: Result<ExecRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err()); // missing required "command" field
+    }
+
+    #[test]
+    fn test_exec_result_serialization() {
+        let result = ExecResult { exit_code: 0 };
+        let json = serde_json::to_string(&result).unwrap();
+        assert_eq!(json, r#"{"exit_code":0}"#);
+
+        let result = ExecResult { exit_code: -1 };
+        let json = serde_json::to_string(&result).unwrap();
+        assert_eq!(json, r#"{"exit_code":-1}"#);
+    }
+
+    #[test]
+    fn test_exec_result_serialization_various_codes() {
+        for code in [0, 1, 127, 255, -1, -15] {
+            let result = ExecResult { exit_code: code };
+            let json = serde_json::to_string(&result).unwrap();
+            assert!(json.contains(&format!("\"exit_code\":{}", code)));
+        }
+    }
 }

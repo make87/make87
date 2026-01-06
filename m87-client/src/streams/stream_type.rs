@@ -517,4 +517,309 @@ mod tests {
             _ => panic!("Expected TcpTarget"),
         }
     }
+
+    // --- StreamType helper tests ---
+
+    #[test]
+    fn test_variant_name_all_variants() {
+        let token = "test-token".to_string();
+
+        assert_eq!(
+            StreamType::Terminal {
+                token: token.clone(),
+                term: None
+            }
+            .variant_name(),
+            "Terminal"
+        );
+        assert_eq!(
+            StreamType::Exec {
+                token: token.clone()
+            }
+            .variant_name(),
+            "Exec"
+        );
+        assert_eq!(
+            StreamType::Logs {
+                token: token.clone()
+            }
+            .variant_name(),
+            "Logs"
+        );
+        assert_eq!(
+            StreamType::Tunnel {
+                token: token.clone(),
+                target: TunnelTarget::Tcp(TcpTarget {
+                    remote_host: "127.0.0.1".to_string(),
+                    remote_port: 80,
+                    local_port: 80
+                })
+            }
+            .variant_name(),
+            "Tunnel"
+        );
+        assert_eq!(
+            StreamType::Serial {
+                token: token.clone(),
+                name: "ttyUSB0".to_string(),
+                baud: None
+            }
+            .variant_name(),
+            "Serial"
+        );
+        assert_eq!(
+            StreamType::Metrics {
+                token: token.clone()
+            }
+            .variant_name(),
+            "Metrics"
+        );
+        assert_eq!(
+            StreamType::Docker {
+                token: token.clone()
+            }
+            .variant_name(),
+            "Docker"
+        );
+        assert_eq!(StreamType::Ssh { token }.variant_name(), "Ssh");
+    }
+
+    #[test]
+    fn test_get_token_from_all_variants() {
+        let token = "my-unique-token".to_string();
+
+        assert_eq!(
+            StreamType::Terminal {
+                token: token.clone(),
+                term: Some("xterm".to_string())
+            }
+            .get_token(),
+            "my-unique-token"
+        );
+        assert_eq!(
+            StreamType::Exec {
+                token: token.clone()
+            }
+            .get_token(),
+            "my-unique-token"
+        );
+        assert_eq!(
+            StreamType::Logs {
+                token: token.clone()
+            }
+            .get_token(),
+            "my-unique-token"
+        );
+        assert_eq!(
+            StreamType::Metrics {
+                token: token.clone()
+            }
+            .get_token(),
+            "my-unique-token"
+        );
+        assert_eq!(
+            StreamType::Docker {
+                token: token.clone()
+            }
+            .get_token(),
+            "my-unique-token"
+        );
+        assert_eq!(StreamType::Ssh { token }.get_token(), "my-unique-token");
+    }
+
+    // --- TunnelParseError Display tests ---
+
+    #[test]
+    fn test_tunnel_parse_error_display_protocol() {
+        let err = TunnelParseError::InvalidProtocol("xyz".to_string());
+        assert_eq!(format!("{}", err), "invalid protocol 'xyz'");
+    }
+
+    #[test]
+    fn test_tunnel_parse_error_display_syntax() {
+        let err = TunnelParseError::InvalidSyntax("a:b:c:d:e".to_string());
+        assert_eq!(format!("{}", err), "invalid tunnel spec 'a:b:c:d:e'");
+    }
+
+    #[test]
+    fn test_tunnel_parse_error_display_range() {
+        let err = TunnelParseError::InvalidRange("end < start".to_string());
+        assert_eq!(format!("{}", err), "invalid port range: end < start");
+    }
+
+    #[test]
+    fn test_tunnel_parse_error_from_parse_int() {
+        let parse_err: Result<u16, _> = "not_a_number".parse();
+        let tunnel_err: TunnelParseError = parse_err.unwrap_err().into();
+        let display = format!("{}", tunnel_err);
+        assert!(display.starts_with("invalid number:"));
+    }
+
+    #[test]
+    fn test_tunnel_parse_error_is_std_error() {
+        let err: Box<dyn std::error::Error> =
+            Box::new(TunnelParseError::InvalidProtocol("test".to_string()));
+        // Just verify it implements std::error::Error
+        assert!(!err.to_string().is_empty());
+    }
+
+    // --- Edge case tests ---
+
+    #[test]
+    fn test_empty_specs_defaults_to_vpn() {
+        let targets = TunnelTarget::from_list(vec![]).unwrap();
+        assert_eq!(targets.len(), 1);
+        match &targets[0] {
+            TunnelTarget::Vpn(v) => {
+                assert!(v.cidr.is_none());
+                assert!(v.mtu.is_none());
+            }
+            _ => panic!("Expected VpnTarget"),
+        }
+    }
+
+    #[test]
+    fn test_explicit_vpn_keyword() {
+        let targets = TunnelTarget::from_list(vec!["vpn".to_string()]).unwrap();
+        assert_eq!(targets.len(), 1);
+        matches!(&targets[0], TunnelTarget::Vpn(_));
+    }
+
+    #[test]
+    fn test_vpn_keyword_case_insensitive() {
+        let targets = TunnelTarget::from_list(vec!["VPN".to_string()]).unwrap();
+        assert_eq!(targets.len(), 1);
+        matches!(&targets[0], TunnelTarget::Vpn(_));
+
+        let targets = TunnelTarget::from_list(vec!["Vpn".to_string()]).unwrap();
+        assert_eq!(targets.len(), 1);
+        matches!(&targets[0], TunnelTarget::Vpn(_));
+    }
+
+    #[test]
+    fn test_socket_path_simple() {
+        let targets = TunnelTarget::from_list(vec!["/var/run/test.sock".to_string()]).unwrap();
+        assert_eq!(targets.len(), 1);
+        match &targets[0] {
+            TunnelTarget::Socket(s) => {
+                assert_eq!(s.local_path, "/var/run/test.sock");
+                assert_eq!(s.remote_path, "/var/run/test.sock");
+            }
+            _ => panic!("Expected SocketTarget"),
+        }
+    }
+
+    #[test]
+    fn test_socket_path_with_remote() {
+        let targets =
+            TunnelTarget::from_list(vec!["/local/path.sock:/remote/path.sock".to_string()])
+                .unwrap();
+        assert_eq!(targets.len(), 1);
+        match &targets[0] {
+            TunnelTarget::Socket(s) => {
+                assert_eq!(s.local_path, "/local/path.sock");
+                assert_eq!(s.remote_path, "/remote/path.sock");
+            }
+            _ => panic!("Expected SocketTarget"),
+        }
+    }
+
+    #[test]
+    fn test_port_boundary_min() {
+        let targets = TunnelTarget::from_list(vec!["1".to_string()]).unwrap();
+        assert_eq!(targets.len(), 1);
+        match &targets[0] {
+            TunnelTarget::Tcp(t) => {
+                assert_eq!(t.local_port, 1);
+                assert_eq!(t.remote_port, 1);
+            }
+            _ => panic!("Expected TcpTarget"),
+        }
+    }
+
+    #[test]
+    fn test_port_boundary_max() {
+        let targets = TunnelTarget::from_list(vec!["65535".to_string()]).unwrap();
+        assert_eq!(targets.len(), 1);
+        match &targets[0] {
+            TunnelTarget::Tcp(t) => {
+                assert_eq!(t.local_port, 65535);
+                assert_eq!(t.remote_port, 65535);
+            }
+            _ => panic!("Expected TcpTarget"),
+        }
+    }
+
+    #[test]
+    fn test_port_overflow() {
+        let result = TunnelTarget::from_list(vec!["65536".to_string()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_protocol() {
+        let result = TunnelTarget::from_list(vec!["8080/xyz".to_string()]);
+        assert!(result.is_err());
+        match result {
+            Err(TunnelParseError::InvalidProtocol(p)) => assert_eq!(p, "xyz"),
+            _ => panic!("Expected InvalidProtocol error"),
+        }
+    }
+
+    #[test]
+    fn test_tcp_protocol_explicit() {
+        let targets = TunnelTarget::from_list(vec!["8080/tcp".to_string()]).unwrap();
+        assert_eq!(targets.len(), 1);
+        matches!(&targets[0], TunnelTarget::Tcp(_));
+    }
+
+    #[test]
+    fn test_to_stream_type_methods() {
+        let tcp = TcpTarget {
+            remote_host: "localhost".to_string(),
+            remote_port: 80,
+            local_port: 8080,
+        };
+        let stream = tcp.to_stream_type("token123");
+        assert_eq!(stream.get_token(), "token123");
+        assert_eq!(stream.variant_name(), "Tunnel");
+
+        let udp = UdpTarget {
+            remote_host: "localhost".to_string(),
+            remote_port: 53,
+            local_port: 5353,
+        };
+        let stream = udp.to_stream_type("token456");
+        assert_eq!(stream.get_token(), "token456");
+
+        let socket = SocketTarget {
+            local_path: "/tmp/a.sock".to_string(),
+            remote_path: "/tmp/b.sock".to_string(),
+        };
+        let stream = socket.to_stream_type("token789");
+        assert_eq!(stream.get_token(), "token789");
+
+        let vpn = VpnTarget {
+            cidr: Some("10.0.0.0/24".to_string()),
+            mtu: Some(1400),
+        };
+        let stream = vpn.to_stream_type("tokenvpn");
+        assert_eq!(stream.get_token(), "tokenvpn");
+    }
+
+    #[test]
+    fn test_tunnel_target_to_stream_type() {
+        let target = TunnelTarget::Tcp(TcpTarget {
+            remote_host: "example.com".to_string(),
+            remote_port: 443,
+            local_port: 8443,
+        });
+        let stream = target.to_stream_type("mytoken");
+        match stream {
+            StreamType::Tunnel { token, target: _ } => {
+                assert_eq!(token, "mytoken");
+            }
+            _ => panic!("Expected Tunnel variant"),
+        }
+    }
 }

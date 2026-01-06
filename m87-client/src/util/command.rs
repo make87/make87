@@ -36,3 +36,30 @@ pub fn binary_exists(name: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_binary_exists_absolute_path() {
+        // /bin/sh should exist on all Unix systems
+        assert!(binary_exists("/bin/sh"));
+    }
+
+    #[test]
+    fn test_binary_exists_in_path() {
+        // "sh" should be found via PATH search
+        assert!(binary_exists("sh"));
+    }
+
+    #[test]
+    fn test_binary_exists_not_found() {
+        assert!(!binary_exists("nonexistent_binary_xyz_123"));
+    }
+
+    #[test]
+    fn test_binary_exists_absolute_not_found() {
+        assert!(!binary_exists("/nonexistent/path/to/binary"));
+    }
+}

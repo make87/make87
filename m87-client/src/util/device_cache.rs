@@ -126,3 +126,49 @@ fn write_atomic(path: &PathBuf, data: &[u8]) -> Result<()> {
     fs::rename(tmp, path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cached_device_serialization() {
+        let device = CachedDevice {
+            id: "abc123".to_string(),
+            short_id: "abc".to_string(),
+            name: "my-device".to_string(),
+            updated_at: 1700000000,
+            server_url: "https://api.example.com".to_string(),
+        };
+
+        let json = serde_json::to_string(&device).unwrap();
+        let deserialized: CachedDevice = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.id, "abc123");
+        assert_eq!(deserialized.name, "my-device");
+        assert_eq!(deserialized.updated_at, 1700000000);
+    }
+
+    #[test]
+    fn test_cache_path_structure() {
+        let path = cache_path().unwrap();
+        let path_str = path.to_string_lossy();
+        assert!(path_str.ends_with("m87/device_index.json"));
+    }
+
+    #[test]
+    fn test_write_atomic_creates_file() {
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join(format!("m87_test_atomic_{}.json", std::process::id()));
+
+        let data = b"test content";
+        write_atomic(&test_file, data).unwrap();
+
+        assert!(test_file.exists());
+        let content = fs::read(&test_file).unwrap();
+        assert_eq!(content, data);
+
+        // Cleanup
+        let _ = fs::remove_file(&test_file);
+    }
+}
