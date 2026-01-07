@@ -2534,6 +2534,7 @@ dependencies = [
  "sha1",
  "stun",
  "sysinfo",
+ "tempfile",
  "termion",
  "tokio",
  "tokio-serial",

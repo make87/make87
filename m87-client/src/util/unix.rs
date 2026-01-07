@@ -86,18 +86,37 @@ pub fn find_systemctl() -> Result<PathBuf> {
     bail!("systemctl not found. Is systemd installed?")
 }
 
-/// Validate that a path is safe for use in ExecStart
-/// Returns error if path contains spaces (systemd escaping is complex)
+/// Validate that a path is safe for use in systemd ExecStart
+/// Rejects paths with characters that would require escaping or break unit files
 pub fn validate_exec_path(path: &Path) -> Result<()> {
     let path_str = path.to_string_lossy();
-    if path_str.contains(' ') {
+
+    // Check for whitespace (space, tab)
+    if path_str.contains(' ') || path_str.contains('\t') {
         bail!(
-            "Executable path contains spaces: '{}'\n\
-             Systemd service files require special escaping for paths with spaces.\n\
+            "Executable path contains whitespace: '{}'\n\
+             Systemd service files require special escaping for paths with whitespace.\n\
              Please install m87 to a path without spaces (e.g., /usr/local/bin/m87)",
             path_str
         );
     }
+
+    // Check for newlines (would break unit file format)
+    if path_str.contains('\n') || path_str.contains('\r') {
+        bail!(
+            "Executable path contains newline characters: '{}'",
+            path_str.escape_debug()
+        );
+    }
+
+    // Check for quotes (would complicate escaping)
+    if path_str.contains('"') {
+        bail!(
+            "Executable path contains quote characters: '{}'",
+            path_str
+        );
+    }
+
     Ok(())
 }
 

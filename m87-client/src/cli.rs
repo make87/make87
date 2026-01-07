@@ -353,7 +353,11 @@ enum InternalCommands {
         #[arg(long)]
         exe_path: String,
 
-        /// Enable and start the service after installation
+        /// Enable service to start on boot
+        #[arg(long)]
+        enable: bool,
+
+        /// Enable and start the service immediately
         #[arg(long)]
         enable_now: bool,
 
@@ -539,6 +543,7 @@ pub async fn cli() -> anyhow::Result<()> {
                 user,
                 home,
                 exe_path,
+                enable,
                 enable_now,
                 restart_if_running,
             } => {
@@ -546,6 +551,7 @@ pub async fn cli() -> anyhow::Result<()> {
                     &user,
                     &home,
                     &exe_path,
+                    enable,
                     enable_now,
                     restart_if_running,
                 )

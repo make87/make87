@@ -1,10 +1,11 @@
 use anyhow::{bail, Context, Result};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, Permissions};
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
 use tokio::{
-    pin, signal,
+    signal::unix::{signal, SignalKind},
     time::{sleep, Duration},
 };
 use tracing::{error, info, warn};
@@ -15,18 +16,16 @@ use crate::util::shutdown::SHUTDOWN;
 use crate::util::system_info::get_system_info;
 use crate::util::unix::{
     is_root, reexec_with_sudo, run_systemctl, run_systemctl_checked, validate_exec_path,
-    UserInfo,
 };
 use crate::{auth::register_device, util::tls::set_tls_provider};
 
 const SERVICE_NAME: &str = "m87-agent";
 const SERVICE_FILE: &str = "/etc/systemd/system/m87-agent.service";
-const SERVICE_FILE_TMP: &str = "/etc/systemd/system/m87-agent.service.tmp";
 const SERVICE_FILE_MODE: u32 = 0o644;
 
 /// Generate the systemd service file content with all XDG environment variables
-fn generate_service_content(exe_path: &Path, user_info: &UserInfo) -> String {
-    let home = user_info.home_dir.display();
+fn generate_service_content(exe_path: &Path, username: &str, home: &Path) -> String {
+    let home = home.display();
 
     format!(
         r#"[Unit]
@@ -37,6 +36,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart={exe_path} agent run
+WorkingDirectory=%h
 Restart=on-failure
 RestartSec=3
 User={username}
@@ -65,16 +65,15 @@ StartLimitIntervalSec=30
 WantedBy=multi-user.target
 "#,
         exe_path = exe_path.display(),
-        username = user_info.username,
+        username = username,
         home = home,
     )
 }
 
-/// Write service file atomically with explicit permissions (Proposal B)
+/// Write service file atomically using tempfile
 /// Returns Ok(true) if file was changed, Ok(false) if no change needed
 fn write_service_file_atomic(content: &str) -> Result<bool> {
     let service_path = Path::new(SERVICE_FILE);
-    let tmp_path = PathBuf::from(SERVICE_FILE_TMP);
 
     // Check if content differs from existing
     if service_path.exists() {
@@ -85,39 +84,39 @@ fn write_service_file_atomic(content: &str) -> Result<bool> {
         }
     }
 
-    // Write to temp file with explicit mode
-    {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(SERVICE_FILE_MODE)
-            .open(&tmp_path)
-            .context("Failed to create temporary service file")?;
+    // Create temp file in same directory for atomic rename
+    let dir = service_path
+        .parent()
+        .unwrap_or(Path::new("/etc/systemd/system"));
+    let mut tmp = NamedTempFile::new_in(dir).context("Failed to create temporary service file")?;
 
-        file.write_all(content.as_bytes())
-            .context("Failed to write service content")?;
+    tmp.write_all(content.as_bytes())
+        .context("Failed to write service content")?;
 
-        file.sync_all()
-            .context("Failed to sync service file to disk")?;
-    }
+    tmp.as_file()
+        .sync_all()
+        .context("Failed to sync service file to disk")?;
 
-    // Atomic rename
-    fs::rename(&tmp_path, service_path).context("Failed to rename temporary service file")?;
+    // Persist atomically (rename)
+    let tmp_path = tmp.into_temp_path();
+    tmp_path
+        .persist(service_path)
+        .context("Failed to persist service file")?;
 
-    // Ensure permissions are correct (in case file existed with different perms)
-    fs::set_permissions(service_path, fs::Permissions::from_mode(SERVICE_FILE_MODE))
+    // Set permissions explicitly
+    fs::set_permissions(service_path, Permissions::from_mode(SERVICE_FILE_MODE))
         .context("Failed to set service file permissions")?;
 
-    Ok(true) // File was changed
+    Ok(true)
 }
 
-/// Internal function called by hidden subcommand after sudo re-exec (Proposals A, B, F)
+/// Internal function called by hidden subcommand after sudo re-exec
 /// Must be run as root
 pub async fn internal_setup_privileged(
     username: &str,
     home: &str,
     exe_path_str: &str,
+    enable: bool,
     enable_now: bool,
     restart_if_running: bool,
 ) -> Result<()> {
@@ -128,19 +127,13 @@ pub async fn internal_setup_privileged(
     let exe_path = PathBuf::from(exe_path_str);
     let home_dir = PathBuf::from(home);
 
-    // Validate exe path doesn't contain spaces (Proposal E)
+    // Validate exe path
     validate_exec_path(&exe_path)?;
 
-    let user_info = UserInfo {
-        username: username.to_string(),
-        uid: 0, // Not needed for service file generation
-        home_dir,
-    };
-
     // Generate service content
-    let content = generate_service_content(&exe_path, &user_info);
+    let content = generate_service_content(&exe_path, username, &home_dir);
 
-    // Write atomically (Proposal B)
+    // Write atomically
     let file_changed = write_service_file_atomic(&content)?;
 
     if file_changed {
@@ -150,10 +143,15 @@ pub async fn internal_setup_privileged(
         run_systemctl_checked(&["daemon-reload"])?;
     }
 
+    // Handle enable/start based on flags
     if enable_now {
-        // Proposal F: enable --now in one command
+        // enable --now: enable at boot AND start immediately
         run_systemctl_checked(&["enable", "--now", SERVICE_NAME])?;
         info!("Enabled and started m87-agent service");
+    } else if enable {
+        // enable without --now: just enable at boot
+        run_systemctl_checked(&["enable", SERVICE_NAME])?;
+        info!("Enabled m87-agent service (starts on boot)");
     } else if restart_if_running && file_changed {
         // Check if service is active and restart if so
         let status = run_systemctl(&["is-active", "--quiet", SERVICE_NAME])?;
@@ -193,15 +191,15 @@ pub async fn internal_disable_privileged(now: bool) -> Result<()> {
     Ok(())
 }
 
-/// Unified setup function that handles all installation scenarios (Proposals A, D)
-async fn setup_service(enable_now: bool, restart_if_running: bool) -> Result<()> {
-    // Resolve user info from passwd database (Proposal D)
-    let user_info = crate::util::unix::resolve_invoking_user()
-        .context("Failed to determine user identity")?;
+/// Unified setup function that handles all installation scenarios
+async fn setup_service(enable: bool, enable_now: bool, restart_if_running: bool) -> Result<()> {
+    // Resolve user info from passwd database
+    let user_info =
+        crate::util::unix::resolve_invoking_user().context("Failed to determine user identity")?;
 
     let exe_path = std::env::current_exe().context("Failed to get current executable path")?;
 
-    // Validate path early (Proposal E)
+    // Validate path early
     validate_exec_path(&exe_path)?;
 
     let exe_path_str = exe_path
@@ -218,12 +216,13 @@ async fn setup_service(enable_now: bool, restart_if_running: bool) -> Result<()>
             &user_info.username,
             home_str,
             exe_path_str,
+            enable,
             enable_now,
             restart_if_running,
         )
         .await
     } else {
-        // Re-exec with sudo using absolute path (Proposal A)
+        // Re-exec with sudo using absolute path
         let mut args = vec![
             "internal",
             "agent-setup-privileged",
@@ -235,6 +234,9 @@ async fn setup_service(enable_now: bool, restart_if_running: bool) -> Result<()>
             exe_path_str,
         ];
 
+        if enable {
+            args.push("--enable");
+        }
         if enable_now {
             args.push("--enable-now");
         }
@@ -249,19 +251,23 @@ async fn setup_service(enable_now: bool, restart_if_running: bool) -> Result<()>
 /// CLI: m87 agent enable [--now]
 /// Enables auto-start on boot (auto-installs/updates service file)
 pub async fn enable(now: bool) -> Result<()> {
-    setup_service(now, false).await
+    // enable: always enable at boot
+    // enable --now: enable at boot AND start immediately
+    setup_service(true, now, false).await
 }
 
 /// CLI: m87 agent start
 /// Starts the agent service (auto-installs/updates service file)
 pub async fn start() -> Result<()> {
-    setup_service(true, false).await
+    // start: enable at boot AND start immediately
+    setup_service(true, true, false).await
 }
 
 /// CLI: m87 agent restart
 /// Restarts the agent service (auto-installs/updates service file)
 pub async fn restart() -> Result<()> {
-    setup_service(false, true).await
+    // restart: just restart if running (don't enable if not already enabled)
+    setup_service(false, false, true).await
 }
 
 /// CLI: m87 agent stop
@@ -297,9 +303,7 @@ pub async fn status() -> Result<()> {
     // Exit code 4 means service unknown/not installed
     if let Some(code) = status.code() {
         if code == 4 {
-            warn!(
-                "Service not installed. Run 'm87 agent enable --now' to install and start."
-            );
+            warn!("Service not installed. Run 'm87 agent enable --now' to install and start.");
         }
     }
 
@@ -310,12 +314,19 @@ pub async fn status() -> Result<()> {
 /// Main agent daemon entry point (used by systemd service)
 pub async fn run() -> Result<()> {
     info!("Running device");
-    let shutdown = signal::ctrl_c();
-    pin!(shutdown);
+
+    // Handle both SIGTERM (systemd stop) and SIGINT (Ctrl+C)
+    let mut sigterm = signal(SignalKind::terminate()).context("Failed to register SIGTERM handler")?;
+    let mut sigint = signal(SignalKind::interrupt()).context("Failed to register SIGINT handler")?;
+
     tokio::select! {
         _ = login_and_run() => {},
-        _ = &mut shutdown => {
-            info!("Received shutdown signal, stopping device");
+        _ = sigterm.recv() => {
+            info!("Received SIGTERM, stopping device");
+            SHUTDOWN.cancel();
+        }
+        _ = sigint.recv() => {
+            info!("Received SIGINT, stopping device");
             SHUTDOWN.cancel();
         }
     }
