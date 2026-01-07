@@ -64,7 +64,7 @@ portable-pty = "0.9"
 # only for cli used for shell
 termion = "4.0.6"
 # used for pretty cli ui printing
-ratatui = { version = "0.29", features = ["termion"] }
+ratatui = { version = "0.30", features = ["termion"] }
 # STUN client for public IP detection (WebRTC-compatible)
 stun = "0.9.0"
 
