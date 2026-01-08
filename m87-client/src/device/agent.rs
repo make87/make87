@@ -5,11 +5,11 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 
-use std::path::Path;
 use std::process::Command;
+use std::{path::Path, sync::Arc};
 
-use crate::config::Config;
 use crate::{auth::register_device, util::tls::set_tls_provider};
+use crate::{config::Config, device::unit_manager::UnitManager};
 
 use crate::device::control_tunnel;
 use crate::util::shutdown::SHUTDOWN;
@@ -272,13 +272,17 @@ async fn login_and_run() -> Result<()> {
         sleep(Duration::from_secs(1)).await;
     }
 
+    let unit_manager = UnitManager::new().await?;
+    let manager = Arc::new(unit_manager);
+    manager.clone().start();
+
     loop {
         if SHUTDOWN.is_cancelled() {
             break;
         }
         info!("Starting control tunnel...");
         tokio::select! {
-            result = control_tunnel::connect_control_tunnel() => {
+            result = control_tunnel::connect_control_tunnel(manager.clone()) => {
                 match result {
                     Err(e) => {
                         error!("Control tunnel crashed with error: {e}. Reconnecting in 5 seconds...");

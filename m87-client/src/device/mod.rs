@@ -3,10 +3,11 @@
 pub mod agent;
 
 #[cfg(feature = "agent")]
-pub mod services;
-
+pub mod log_manager;
 #[cfg(feature = "agent")]
 pub mod system_metrics;
+#[cfg(feature = "agent")]
+pub mod unit_manager;
 
 pub mod docker;
 pub mod fs;

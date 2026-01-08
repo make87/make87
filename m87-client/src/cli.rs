@@ -236,21 +236,6 @@ pub enum DeviceCommand {
         /// Optional baud rate (defaults to 115200)
         baud: Option<u32>,
     },
-
-    /// Observe device logs
-    #[command(subcommand)]
-    Observe(DeviceObserveCommand),
-}
-
-#[derive(Subcommand, Debug)]
-pub enum DeviceObserveCommand {
-    List,
-    Docker {
-        name: String,
-        /// optional flag to remove the service
-        #[arg(short = 'r', long, default_value_t = false)]
-        remove: bool,
-    },
 }
 
 #[cfg(feature = "agent")]
@@ -515,7 +500,7 @@ pub async fn cli() -> anyhow::Result<()> {
 
         Commands::Version => {
             tracing::info!("[done]");
-        println!("Version: {}", env!("CARGO_PKG_VERSION"));
+            println!("Version: {}", env!("CARGO_PKG_VERSION"));
             println!("Build: {}", env!("GIT_COMMIT"));
             println!("Rust: {}", env!("RUSTC_VERSION"));
             println!(
@@ -671,24 +656,5 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             serial::open_serial(&device, &path, baud).await?;
             Ok(())
         }
-
-        DeviceCommand::Observe(command) => match command {
-            DeviceObserveCommand::List => {
-                let device = devices::get_device_by_name(&device).await?;
-                tui::devices::print_dive_observe_config(&device);
-                Ok(())
-            }
-            DeviceObserveCommand::Docker { name, remove } => {
-                if devices::update_observe_config(&device, &name, remove)
-                    .await
-                    .is_ok()
-                {
-                    tracing::info!("[done] updated observe config");
-                } else {
-                    tracing::error!("[error] failed to update observe config");
-                }
-                Ok(())
-            }
-        },
     }
 }

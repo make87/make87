@@ -3,7 +3,8 @@ use std::time::Duration;
 use crate::{
     models::{
         api_key::ApiKeyDoc,
-        device::{DeviceDoc, DeviceServicesDoc},
+        deploy_spec::{DeployReportDoc, DeployRevisionDoc},
+        device::DeviceDoc,
         device_auth_request::DeviceAuthRequestDoc,
         roles::RoleDoc,
         user::UserDoc,
@@ -54,8 +55,12 @@ impl Mongo {
         self.col("api_keys")
     }
 
-    pub fn services(&self) -> Collection<DeviceServicesDoc> {
-        self.col("device_services")
+    pub fn deploy_revisions(&self) -> Collection<DeployRevisionDoc> {
+        self.col("deploy_revisions")
+    }
+
+    pub fn deploy_reports(&self) -> Collection<DeployReportDoc> {
+        self.col("deploy_reports")
     }
 
     pub async fn ensure_indexes(&self) -> ServerResult<()> {
@@ -119,8 +124,76 @@ impl Mongo {
             .create_index(IndexModel::builder().keys(doc! { "sub": 1 }).build())
             .await?;
 
-        self.services()
+        self.deploy_revisions()
             .create_index(IndexModel::builder().keys(doc! { "device_id": 1 }).build())
+            .await?;
+
+        self.deploy_revisions()
+            .create_index(IndexModel::builder().keys(doc! { "group_id": 1 }).build())
+            .await?;
+
+        // add compund for device/group_id and active flag
+        self.deploy_revisions()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "device_id": 1, "active": 1 })
+                    .build(),
+            )
+            .await?;
+        self.deploy_revisions()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "group_id": 1, "active": 1 })
+                    .build(),
+            )
+            .await?;
+        self.deploy_revisions()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "device_id": 1, "revision.id": 1 })
+                    .build(),
+            )
+            .await?;
+
+        // group + revision.id
+        self.deploy_revisions()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "group_id": 1, "revision.id": 1 })
+                    .build(),
+            )
+            .await?;
+
+        self.deploy_reports()
+            .create_index(IndexModel::builder().keys(doc! { "device_id": 1 }).build())
+            .await?;
+
+        self.deploy_reports()
+            .create_index(IndexModel::builder().keys(doc! { "group_id": 1 }).build())
+            .await?;
+
+        // ttl index
+        self.deploy_reports()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "expires_at": 1 })
+                    .options(
+                        IndexOptions::builder()
+                            .name(Some("ttl_deploy_reports_expires_at".to_string()))
+                            .expire_after(Some(Duration::from_secs(0)))
+                            .partial_filter_expression(doc! { "expires_at": { "$exists": true } })
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await?;
+        // index on device id and revision id
+        self.deploy_reports()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "device_id": 1, "revision_id": 1 })
+                    .build(),
+            )
             .await?;
 
         Ok(())

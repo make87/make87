@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use anyhow::{Result, anyhow};
-use m87_shared::device::{PublicDevice, UpdateDeviceBody};
+use m87_shared::device::PublicDevice;
 use tracing::warn;
 
 use crate::util::device_cache;
@@ -136,30 +136,4 @@ pub fn to_resolved(d: &device_cache::CachedDevice) -> ResolvedDevice {
             .trim_start_matches("http://")
             .to_string(),
     }
-}
-
-pub async fn update_observe_config(device: &str, name: &str, remove: bool) -> Result<()> {
-    let device_obj = get_device_by_name(&device).await?;
-    let mut config = device_obj.config.clone();
-    if remove {
-        config.observe.docker_services.retain(|s| s != &name);
-    } else {
-        config.observe.docker_services.push(name.to_string());
-    }
-    let update_device_body = UpdateDeviceBody {
-        config: Some(config),
-        ..Default::default()
-    };
-    let token = AuthManager::get_cli_token().await?;
-    let config = Config::load()?;
-    let resolved = resolve_device_short_id_cached(&device).await?;
-    server::update_device(
-        &resolved.url,
-        &token,
-        &device_obj.id,
-        update_device_body,
-        config.trust_invalid_server_cert,
-    )
-    .await?;
-    Ok(())
 }

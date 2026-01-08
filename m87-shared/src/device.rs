@@ -3,7 +3,7 @@ use std::hash::Hash;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::DeviceClientConfig;
+use crate::{config::DeviceClientConfig, deploy_spec::RunState};
 
 /// Compute short device ID (first 6 chars of SHA256 hash)
 /// Used for tunnel routing - must be consistent across server and client
@@ -75,4 +75,9 @@ pub struct UpdateDeviceBody {
     pub system_info: Option<DeviceSystemInfo>,
     pub client_version: Option<String>,
     pub config: Option<DeviceClientConfig>,
+}
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct DeviceStatus {
+    pub run_states: Vec<RunState>,
 }

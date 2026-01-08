@@ -1,10 +1,10 @@
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use m87_shared::services::ServiceInfo;
 use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
 
+use crate::api::deploy_spec::create_route as deploy_spec_route;
 use crate::auth::claims::Claims;
 use crate::models::device::{DeviceDoc, PublicDevice, UpdateDeviceBody};
 use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
@@ -20,7 +20,7 @@ pub fn create_route() -> Router<AppState> {
                 .post(update_device_by_id)
                 .delete(delete_device),
         )
-        .route("/{id}/services", get(get_services))
+        .merge(deploy_spec_route())
 }
 
 async fn get_devices(
@@ -122,24 +122,5 @@ async fn delete_device(
 
     Ok(ServerResponse::builder()
         .status_code(axum::http::StatusCode::NO_CONTENT)
-        .build())
-}
-
-async fn get_services(
-    claims: Claims,
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> ServerAppResult<Vec<ServiceInfo>> {
-    let device_oid = ObjectId::parse_str(&id)?;
-    let device_opt = claims
-        .find_one_with_access(&state.db.devices(), doc! { "_id": device_oid })
-        .await?;
-    let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
-
-    let services = device.get_services(&state.db).await?;
-
-    Ok(ServerResponse::builder()
-        .body(services)
-        .status_code(axum::http::StatusCode::OK)
         .build())
 }

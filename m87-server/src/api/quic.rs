@@ -322,7 +322,7 @@ async fn run_heartbeat_loop(
                     break;
                 };
 
-                let body = device.handle_heartbeat(claims.clone(), &state.db, req).await?;
+                let body = device.handle_heartbeat(claims.clone(), &state.db, req, &state.config).await?;
 
                 info!("sending heartbeat response");
                 match write_msg(&mut send, &body).await {

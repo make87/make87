@@ -117,20 +117,3 @@ fn format_relative_time(iso_time: &str) -> String {
     let years = days / 365;
     format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
 }
-
-pub fn print_dive_observe_config(device: &PublicDevice) {
-    let services = &device.config.observe.docker_services;
-
-    if services.is_empty() {
-        println!("No observed Docker services.");
-        return;
-    }
-
-    println!("Observed Docker services:");
-    println!("{:<3} {}", "#", "NAME");
-    println!("{:-<3} {:-<32}", "", "");
-
-    for (i, svc) in services.iter().enumerate() {
-        println!("{:<3} {}", i + 1, svc);
-    }
-}

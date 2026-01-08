@@ -1,16 +1,19 @@
 #[cfg(feature = "agent")]
-use crate::device::services::collect_all_services;
+use std::sync::Arc;
+
 #[cfg(feature = "agent")]
 use anyhow::Context;
 use anyhow::Result;
 
 use serde::{Serialize, de::DeserializeOwned};
+#[cfg(feature = "agent")]
+use tokio::sync::mpsc;
 use tracing::error;
 #[cfg(feature = "agent")]
 use tracing::{debug, warn};
 
 #[cfg(feature = "agent")]
-use crate::{auth::AuthManager, config::Config};
+use crate::{auth::AuthManager, config::Config, device::unit_manager::UnitManager};
 
 #[cfg(feature = "agent")]
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
@@ -25,7 +28,7 @@ pub struct HeartbeatState {
 
 // Agent-specific: Maintain persistent control tunnel connection
 #[cfg(feature = "agent")]
-pub async fn connect_control_tunnel() -> Result<()> {
+pub async fn connect_control_tunnel(unit_manager: Arc<UnitManager>) -> Result<()> {
     use std::sync::Arc;
 
     use crate::streams::quic::get_quic_connection;
@@ -71,6 +74,7 @@ pub async fn connect_control_tunnel() -> Result<()> {
         first_heartbeat: true,
     }));
 
+    let manager_clone = unit_manager.clone();
     let _receiver = tokio::spawn({
         let state = state.clone();
         async move {
@@ -91,8 +95,11 @@ pub async fn connect_control_tunnel() -> Result<()> {
                                 st.heartbeat_interval = new as u64;
                                 new_cfg.heartbeat_interval_secs = new as u64;
                             }
-                            new_cfg.observe = cfg.observe;
                             new_cfg.save()?;
+                        }
+                        if let Some(target_units_config) = resp.target_revision {
+                            tracing::info!("Received new target units config");
+                            manager_clone.set_desired_units(target_units_config);
                         }
 
                         st.last_instruction_hash = resp.instruction_hash;
@@ -111,8 +118,29 @@ pub async fn connect_control_tunnel() -> Result<()> {
             loop {
                 use std::time::Duration;
 
+                use crate::device::unit_manager::{ack_event, on_new_event};
+
                 tokio::select! {
                     _ = shutdown.changed() => break,
+                        // handle envent rx
+
+                    data = on_new_event() => {
+                        let Some(claimed) = data else { continue };
+                        let st = state.lock().await;
+
+                        let req = HeartbeatRequest {
+                            last_instruction_hash: st.last_instruction_hash.clone(),
+                            deploy_report: Some(claimed.report.clone()),
+                            ..Default::default()
+                        };
+
+                        tracing::info!("Sending heartbeat with event udpate");
+
+                        if write_msg(&mut send, &req).await.is_ok() {
+                            ack_event(&claimed).await;
+                        }
+                    },
+
 
                     _ = async {
                         let (req, interval) = {
@@ -125,7 +153,6 @@ pub async fn connect_control_tunnel() -> Result<()> {
 
                             if st.first_heartbeat {
                                 st.first_heartbeat = false;
-                                req.services = Some(collect_all_services().await?);
                                 req.client_version = Some(env!("CARGO_PKG_VERSION").to_string());
                                 req.system_info = Some(get_system_info().await?);
                             }
@@ -143,100 +170,9 @@ pub async fn connect_control_tunnel() -> Result<()> {
             }
         }
     });
-    // // ---------
 
-    // tokio::spawn(async move {
-    //     let mut last_instruction_hash = String::new();
-    //     let mut heartbeat_interval = config.heartbeat_interval_secs;
-    //     let mut pending_interval: Option<u64> = None;
-    //     let mut first_heartbeat = true;
-    //     loop {
-    //         use crate::util::system_info::get_system_info;
-
-    //         tokio::select! {
-
-    //             _ = shutdown.changed() => {
-    //                 debug!("heartbeat loop shutting down");
-    //                 break;
-    //             }
-
-    //             result = async {
-    //                 // ---------------------------
-    //                 // HEARTBEAT TRANSACTION
-    //                 // ---------------------------
-    //                 let mut req = HeartbeatRequest {
-    //                     last_instruction_hash: last_instruction_hash.clone(),
-    //                     ..Default::default()
-    //                 };
-
-    //                 if first_heartbeat {
-    //                     first_heartbeat = false;
-    //                     req.services = Some(collect_all_services().await?);
-    //                     req.client_version = Some(env!("CARGO_PKG_VERSION").to_string());
-    //                     req.system_info = Some(get_system_info().await?);
-    //                 }
-
-    //                 // timeout != interval
-    //                 let timeout = std::time::Duration::from_secs(
-    //                     std::cmp::max(heartbeat_interval * 3, 30)
-    //                 );
-
-    //                 tokio::time::timeout(timeout, write_msg(&mut send, &req)).await??;
-    //                 info!("Heartbeat sent");
-    //                 let resp: HeartbeatResponse =
-    //                     tokio::time::timeout(timeout, read_msg(&mut recv)).await??;
-    //                 info!("Heartbeat response received");
-
-    //                 // ---------------------------
-    //                 // CONFIG UPDATE (unchanged semantics)
-    //                 // ---------------------------
-    //                 if let Some(cfg) = resp.config {
-    //                     info!("Received new config");
-    //                     let mut new_cfg = Config::load()?;
-
-    //                     if let Some(new_interval) = cfg.heartbeat_interval_secs {
-    //                         pending_interval = Some(new_interval as u64);
-    //                         new_cfg.heartbeat_interval_secs = new_interval as u64;
-    //                     }
-
-    //                     new_cfg.observe = cfg.observe;
-    //                     new_cfg.save()?;
-    //                 }
-
-    //                 last_instruction_hash = resp.instruction_hash;
-
-    //                 Ok::<_, anyhow::Error>(())
-    //             } => {
-    //                 if let Err(e) = result {
-    //                     error!("Failed to apply configuration: {}", e);
-    //                     break;
-    //                 }
-
-    //                 // ---------------------------
-    //                 // APPLY INTERVAL SAFELY
-    //                 // ---------------------------
-    //                 if let Some(new) = pending_interval.take() {
-    //                     heartbeat_interval = new;
-    //                 }
-
-    //                 // ---------------------------
-    //                 // WAIT AFTER HANDSHAKE
-    //                 // ---------------------------
-    //                 tokio::time::sleep(
-    //                     std::time::Duration::from_secs(heartbeat_interval)
-    //                 ).await;
-    //             }
-    //         }
-    //     }
-
-    //     let _ = shutdown_tx_clone.send(true);
-    //     Ok::<_, anyhow::Error>(())
-    // });
-
-    //  CENTRAL STATE
     let udp_channels = UdpChannelManager::new();
 
-    //  DATAGRAM OUTPUT PIPE (workers → QUIC)
     let (datagram_tx, mut datagram_rx) = tokio::sync::mpsc::channel::<(u32, Bytes)>(2048);
 
     // This task frames datagrams and sends via QUIC
@@ -325,11 +261,12 @@ pub async fn connect_control_tunnel() -> Result<()> {
                         let io = QuicIo { recv, send };
                         let udp_channels_clone = udp_channels.clone();
                         let datagram_tx_clone = datagram_tx.clone();
+                        let unit_manager_clone = unit_manager.clone();
 
                         tokio::spawn(async move {
                             if let Err(e) =
                                 streams::router::handle_incoming_stream(
-                                    io, udp_channels_clone, datagram_tx_clone
+                                    io, udp_channels_clone, datagram_tx_clone, unit_manager_clone
                                 ).await
                             {
                                 warn!("control stream error: {:?}", e);

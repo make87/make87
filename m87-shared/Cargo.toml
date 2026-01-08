@@ -6,6 +6,8 @@ license = "Apache-2.0"
 description = "Shared types and utilities for the make87 platform"
 
 [dependencies]
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 hex = "0.4"

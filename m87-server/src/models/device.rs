@@ -1,6 +1,6 @@
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-use m87_shared::services::ServiceInfo;
 use mongodb::bson::{DateTime, Document, doc, oid::ObjectId};
 
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 pub use m87_shared::config::DeviceClientConfig;
 pub use m87_shared::device::{DeviceSystemInfo, PublicDevice, short_device_id};
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
+use tracing_subscriber::fmt::format;
 
+use crate::config::AppConfig;
+use crate::models::deploy_spec::{CreateDeployReportBody, DeployReportDoc, DeployRevisionDoc};
 use crate::{
     auth::{access_control::AccessControlled, claims::Claims},
     db::Mongo,
@@ -105,6 +108,8 @@ pub struct DeviceDoc {
     pub api_key_id: ObjectId,
     #[serde(default)]
     pub last_instruction_hash: String,
+    #[serde(default)]
+    pub last_deployment_hash: String,
 }
 
 impl DeviceDoc {
@@ -142,6 +147,7 @@ impl DeviceDoc {
             instruction_hash: 0,
             api_key_id: create_body.api_key_id,
             last_instruction_hash: "".to_string(),
+            last_deployment_hash: "".to_string(),
         };
         let _ = db.devices().insert_one(node.clone()).await?;
         Ok(())
@@ -181,6 +187,7 @@ impl DeviceDoc {
         _claims: Claims,
         db: &Arc<Mongo>,
         payload: HeartbeatRequest,
+        config: &Arc<AppConfig>,
     ) -> ServerResult<HeartbeatResponse> {
         let mut update_fields = doc! {};
         if let Some(sys_info) = payload.system_info {
@@ -199,7 +206,7 @@ impl DeviceDoc {
             .devices()
             .update_one(
                 doc! {
-                    "device_id": self.id.unwrap()
+                    "device_id": &self.id.unwrap()
                 },
                 doc! {
                     "$set": update_fields
@@ -207,52 +214,73 @@ impl DeviceDoc {
             )
             .await;
 
-        if let Some(services) = payload.services {
-            let _ = self.create_or_update_services(db, services).await;
+        if let Some(deploy_report) = payload.deploy_report {
+            let body = CreateDeployReportBody {
+                device_id: self.id.clone().unwrap(),
+                revision_id: deploy_report.get_revision_id().to_string(),
+                kind: deploy_report,
+                expires_at: Some(DateTime::from_system_time(
+                    SystemTime::now()
+                        + Duration::from_hours(24 * config.report_retention_days as u64),
+                )),
+            };
+            let res = DeployReportDoc::create_or_update(db, body).await;
+            if let Err(err) = res {
+                tracing::error!("Failed to create deploy report: {}", err);
+            }
         }
-        // TODO: Store or log the metrics for monitoring/alerting
 
-        if payload.last_instruction_hash == self.last_instruction_hash {
+        // TODO: Store or log the metrics for monitoring/alerting
+        //
+        let target_hash = format!(
+            "{}-{}",
+            self.last_deployment_hash, self.last_instruction_hash
+        );
+        if payload.last_instruction_hash == target_hash {
             return Ok(HeartbeatResponse {
                 up_to_date: true,
                 config: None,
-                instruction_hash: self.last_instruction_hash.clone(),
+                instruction_hash: target_hash.clone(),
+                target_revision: None,
             });
         }
+
+        let out = DeployRevisionDoc::get_active_device_deployment(&db, self.id.unwrap()).await;
+        let target_revision = match out {
+            Ok(revision) => Some(revision.revision),
+            Err(_) => None,
+        };
+
+        let new_deployment_hash = match &target_revision {
+            Some(revision) => revision.get_id(),
+            None => "".to_string(),
+        };
+        // update last_deployment_hash in database
+        let _ = db
+            .devices()
+            .update_one(
+                doc! {
+                    "device_id": &self.id.unwrap()
+                },
+                doc! {
+                    "$set": doc! {
+                        "last_deployment_hash": &new_deployment_hash
+                    }
+                },
+            )
+            .await;
 
         let resp = HeartbeatResponse {
             up_to_date: false,
             config: Some(self.config.clone()),
-            instruction_hash: self.last_instruction_hash.clone(),
+            instruction_hash: format!(
+                "{}-{}",
+                new_deployment_hash,
+                self.last_instruction_hash.clone(),
+            ),
+            target_revision,
         };
         Ok(resp)
-    }
-
-    pub async fn get_services(&self, db: &Arc<Mongo>) -> ServerResult<Vec<ServiceInfo>> {
-        let services_doc = db
-            .services()
-            .find_one(doc! {"device_id": self.id.unwrap()})
-            .await?;
-        let Some(services_doc) = services_doc else {
-            return Ok(vec![]);
-        };
-        let services = services_doc.services;
-        Ok(services)
-    }
-
-    pub async fn create_or_update_services(
-        &self,
-        db: &Arc<Mongo>,
-        services: Vec<ServiceInfo>,
-    ) -> ServerResult<()> {
-        let _ = db
-            .services()
-            .update_one(
-                doc! {"device_id": self.id.unwrap()},
-                doc! {"$set": {"services": mongodb::bson::to_bson(&services).unwrap()}},
-            )
-            .await?;
-        Ok(())
     }
 }
 
@@ -293,29 +321,5 @@ impl AccessControlled for DeviceDoc {
     }
     fn allowed_scopes_field() -> Option<&'static str> {
         Some("allowed_scopes")
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceServicesDoc {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
-    pub device_id: String,
-    pub services: Vec<ServiceInfo>,
-}
-
-impl DeviceServicesDoc {
-    pub async fn create_from(
-        db: &Arc<Mongo>,
-        device_id: String,
-        services: Vec<ServiceInfo>,
-    ) -> ServerResult<Self> {
-        let doc = DeviceServicesDoc {
-            id: None,
-            device_id,
-            services,
-        };
-        let _ = db.services().insert_one(doc.clone()).await?;
-        Ok(doc)
     }
 }
