@@ -5,19 +5,19 @@ Authenticate with the make87 platform.
 ## Overview
 
 m87 supports two authentication modes:
-- **Manager login** (default): OAuth2 browser flow for managing devices from your computer
+- **Login** (default): OAuth2 browser flow for managing devices from your computer
 - **Runtime registration** (Linux only): Headless device registration for autonomous runtimes
 
-Nothing prevents you from running a runtime and a manager on the same device.
+Nothing prevents you from running a runtime and using m87 command line on the same device.
 
-## Manager Login
+## Login
 
 ```bash
 # Opens browser for OAuth2 authentication
 m87 login
 ```
 
-After authentication, your CLI is authorized to manage devices across your organization.
+After authentication, m87 command line is authorized to manage devices across your organization.
 
 ## Runtime Registration (Linux)
 
@@ -34,7 +34,7 @@ m87 runtime run --org-id <org-id>
 m87 runtime run --email admin@example.com
 ```
 
-After registration, the device appears in `m87 devices list` with status "pending" until approved by a manager.
+After registration, the device appears in `m87 devices list` with status "pending" until approved.
 
 ## Logout
 
@@ -43,7 +43,7 @@ After registration, the device appears in `m87 devices list` with status "pendin
 m87 logout
 ```
 
-This clears both manager and runtime credentials from the device.
+This clears all credentials from the device.
 
 ## Flags
 
@@ -54,9 +54,9 @@ This clears both manager and runtime credentials from the device.
 
 ## Workflow
 
-### Manager Setup
+### Workstation Setup
 ```bash
-m87 login                    # Authenticate as manager
+m87 login                    # Authenticate
 m87 devices list             # View all devices
 m87 devices approve rpi      # Approve pending runtime
 ```
@@ -64,7 +64,7 @@ m87 devices approve rpi      # Approve pending runtime
 ### Runtime Setup (on the device)
 ```bash
 m87 runtime run              # Register and run this device
-# Wait for manager approval
+# Wait for approval
 m87 runtime enable --now     # Install, enable and start service (prompts for sudo)
 ```
 

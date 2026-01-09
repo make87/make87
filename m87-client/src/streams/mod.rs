@@ -1,4 +1,4 @@
-// Shared modules (used by both runtime and manager)
+// Shared modules (used by both m87 runtime and m87 command line)
 pub mod quic;
 pub mod stream_type;
 

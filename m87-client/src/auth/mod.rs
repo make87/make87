@@ -243,7 +243,7 @@ impl AuthManager {
     }
 }
 
-// Manager-specific: OAuth2 login for device management
+// m87 command line: OAuth2 login for device management
 pub async fn login_cli() -> Result<()> {
     if AuthManager::has_cli_credentials()? {
         info!("Already logged in");
@@ -359,7 +359,7 @@ pub async fn status() -> Result<()> {
     Ok(())
 }
 
-// Manager-specific: Logout from CLI
+// m87 command line: Logout
 pub async fn logout_cli() -> Result<()> {
     AuthManager::delete_cli_credentials().await
 }
@@ -441,7 +441,7 @@ async fn resolve_request_server(request_id: &str) -> Result<(String, server::Dev
 
     found.ok_or_else(|| {
         anyhow::anyhow!(
-            "Auth request '{}' not found on any manager server",
+            "Auth request '{}' not found on any server",
             request_id
         )
     })

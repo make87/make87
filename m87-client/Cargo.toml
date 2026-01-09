@@ -17,11 +17,11 @@ path = "src/lib.rs"
 
 [features]
 # Features are auto-enabled by build.rs based on target OS:
-# - Linux: runtime + manager (full functionality)
-# - macOS/Windows: manager only (device management, no local runtime)
+# - Linux: runtime + cli (full functionality)
+# - macOS/Windows: cli only (device management, no local runtime)
 default = []
-runtime = []  # Runtime-specific: systemd service, local metrics, REST API, control tunnel
-manager = []  # Manager-specific: device management, OAuth login, remote operations
+runtime = []  # m87 runtime: systemd service, local metrics, REST API, control tunnel
+cli = []  # m87 command line: device management, OAuth login, remote operations
 
 [dependencies]
 # Local workspace crates

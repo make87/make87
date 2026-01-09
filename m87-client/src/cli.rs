@@ -74,7 +74,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Authenticate with make87 (manager login via browser)
+    /// Authenticate with make87 via browser
     Login,
 
     /// Logout and deauthenticate this device
@@ -90,7 +90,7 @@ enum Commands {
     #[command(subcommand, hide = true)]
     Internal(InternalCommands),
 
-    /// Manage devices and groups (requires manager role)
+    /// Manage devices and view pending registrations
     #[command(subcommand)]
     Devices(DevicesCommands),
 
@@ -440,9 +440,9 @@ pub async fn cli() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Login => {
-            tracing::info!("Logging in as manager...");
+            tracing::info!("Logging in...");
             auth::login_cli().await?;
-            tracing::info!("[done] Logged in as manager successfully");
+            tracing::info!("[done] Logged in successfully");
         }
 
         Commands::Logout => {

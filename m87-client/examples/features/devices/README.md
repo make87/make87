@@ -4,7 +4,7 @@ List and manage devices in your organization.
 
 ## Overview
 
-The `m87 devices` commands let managers view all connected devices and approve or reject pending registrations.
+The `m87 devices` commands let you view all connected devices and approve or reject pending registrations.
 
 ## Basic Usage
 
@@ -73,7 +73,7 @@ m87 devices list
 
 ### Approve New Runtime
 ```bash
-# Device registered via `m87 runtime login` on remote machine
+# Device registered via `m87 runtime run` on remote machine
 m87 devices list             # Shows device as "pending"
 m87 devices approve rpi      # Allow access
 m87 rpi shell                # Connect to the device
