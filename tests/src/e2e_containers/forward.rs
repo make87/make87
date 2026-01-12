@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::containers::E2EInfra;
 use super::device_registration::register_device_full;
-use super::fixtures::AgentRunner;
+use super::fixtures::RuntimeRunner;
 use super::helpers::{
     exec_background, exec_shell, is_port_listening, wait_for, E2EError, SniSetup, WaitConfig,
 };
@@ -26,19 +26,19 @@ async fn test_forward_tcp() -> Result<(), E2EError> {
     // Step 2: Setup SNI for tunneling
     tracing::info!("Setting up SNI...");
     let sni = SniSetup::from_cli(&infra.cli).await?;
-    sni.setup_both(&infra.agent, &infra.cli, &device.short_id)
+    sni.setup_both(&infra.runtime, &infra.cli, &device.short_id)
         .await?;
 
     // Step 3: Start agent and wait for control tunnel
     tracing::info!("Starting agent run...");
-    let agent = AgentRunner::new(&infra);
-    agent.start_with_tunnel().await?;
+    let runtime = RuntimeRunner::new(&infra);
+    runtime.start_with_tunnel().await?;
 
     // Step 4: Start HTTP server on agent using netcat
     // Note: Using printf instead of echo -e for portability (dash doesn't support echo -e)
     tracing::info!("Starting HTTP server on agent...");
     exec_background(
-        &infra.agent,
+        &infra.runtime,
         "sh -c 'while true; do printf \"HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nHello from forward test\" | nc -l -p 80 -q 1; done'",
         "/tmp/http-server.log",
     ).await?;
@@ -105,19 +105,19 @@ async fn test_forward_port_range_same() -> Result<(), E2EError> {
     // Step 2: Setup SNI for tunneling
     tracing::info!("Setting up SNI...");
     let sni = SniSetup::from_cli(&infra.cli).await?;
-    sni.setup_both(&infra.agent, &infra.cli, &device.short_id)
+    sni.setup_both(&infra.runtime, &infra.cli, &device.short_id)
         .await?;
 
     // Step 3: Start agent and wait for control tunnel
     tracing::info!("Starting agent run...");
-    let agent = AgentRunner::new(&infra);
-    agent.start_with_tunnel().await?;
+    let runtime = RuntimeRunner::new(&infra);
+    runtime.start_with_tunnel().await?;
 
     // Step 4: Start HTTP servers on multiple ports with unique responses
     tracing::info!("Starting HTTP servers on agent ports 8001-8003...");
     for port in 8001..=8003 {
         exec_background(
-            &infra.agent,
+            &infra.runtime,
             &format!(
                 "sh -c 'while true; do printf \"HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nPort {}\" | nc -l -p {} -q 1; done'",
                 port, port
@@ -196,19 +196,19 @@ async fn test_forward_port_range_offset() -> Result<(), E2EError> {
     // Step 2: Setup SNI for tunneling
     tracing::info!("Setting up SNI...");
     let sni = SniSetup::from_cli(&infra.cli).await?;
-    sni.setup_both(&infra.agent, &infra.cli, &device.short_id)
+    sni.setup_both(&infra.runtime, &infra.cli, &device.short_id)
         .await?;
 
     // Step 3: Start agent and wait for control tunnel
     tracing::info!("Starting agent run...");
-    let agent = AgentRunner::new(&infra);
-    agent.start_with_tunnel().await?;
+    let runtime = RuntimeRunner::new(&infra);
+    runtime.start_with_tunnel().await?;
 
     // Step 4: Start HTTP servers on remote ports (9001-9003) with unique responses
     tracing::info!("Starting HTTP servers on agent ports 9001-9003...");
     for port in 9001..=9003 {
         exec_background(
-            &infra.agent,
+            &infra.runtime,
             &format!(
                 "sh -c 'while true; do printf \"HTTP/1.1 200 OK\\r\\nContent-Type: text/plain\\r\\nConnection: close\\r\\n\\r\\nRemote {}\" | nc -l -p {} -q 1; done'",
                 port, port
@@ -292,12 +292,12 @@ async fn test_forward_port_range_mismatch_rejected() -> Result<(), E2EError> {
 
     // Step 2: Setup SNI
     let sni = SniSetup::from_cli(&infra.cli).await?;
-    sni.setup_both(&infra.agent, &infra.cli, &device.short_id)
+    sni.setup_both(&infra.runtime, &infra.cli, &device.short_id)
         .await?;
 
     // Step 3: Start agent
-    let agent = AgentRunner::new(&infra);
-    agent.start_with_tunnel().await?;
+    let runtime = RuntimeRunner::new(&infra);
+    runtime.start_with_tunnel().await?;
 
     // Step 4: Try to start forward with mismatched range sizes
     tracing::info!("Testing mismatched port range rejection...");

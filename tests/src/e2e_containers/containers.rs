@@ -252,19 +252,21 @@ impl E2EInfra {
         run_id: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let server_name = format!("e2e-server-{}", run_id);
+        let server_url = format!("https://{}:8084", server_name);
         let config = format!(
             r#"{{
-  "api_url": "https://{}:8084",
-  "make87_api_url": "https://{}:8084",
-  "make87_app_url": "https://{}:8084",
+  "api_url": "{}",
+  "make87_api_url": "{}",
+  "make87_app_url": "{}",
   "log_level": "debug",
   "owner_reference": null,
   "auth_domain": "https://auth.make87.com/",
   "auth_audience": "https://auth.make87.com",
   "auth_client_id": "test",
-  "trust_invalid_server_cert": true
+  "trust_invalid_server_cert": true,
+  "manager_server_urls": ["{}"]
 }}"#,
-            server_name, server_name, server_name
+            server_url, server_url, server_url, server_url
         );
 
         let credentials = format!(
