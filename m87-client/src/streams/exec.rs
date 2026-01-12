@@ -85,7 +85,7 @@ where
 
     // Create a new session so the child has no controlling terminal.
     // This ensures programs like `sudo` that open /dev/tty will fall back
-    // to using stderr for prompts (which we pipe back to the manager).
+    // to using stderr for prompts (which we pipe back to the command line).
     #[cfg(unix)]
     {
         #[allow(unused_imports)]

@@ -121,8 +121,8 @@ pub async fn get_manager_server_urls(make87_api_url: &str, token: &str) -> Resul
     Ok(manager_urls)
 }
 
-// Agent-specific: Used by device registration
-#[cfg(feature = "agent")]
+// Runtime-specific: Used by device registration
+#[cfg(feature = "runtime")]
 pub async fn set_auth_request(
     api_url: &str,
     body: DeviceAuthRequestBody,
@@ -142,8 +142,8 @@ pub async fn set_auth_request(
     }
 }
 
-// Agent-specific: Used by device registration
-#[cfg(feature = "agent")]
+// Runtime-specific: Used by device registration
+#[cfg(feature = "runtime")]
 pub async fn check_auth_request(
     api_url: &str,
     request_id: &str,
@@ -172,7 +172,7 @@ pub async fn check_auth_request(
     }
 }
 
-// Manager-specific: List pending device auth requests
+// m87 command line: List pending device auth requests
 pub async fn list_auth_requests(
     api_url: &str,
     token: &str,
@@ -191,7 +191,7 @@ pub async fn list_auth_requests(
     }
 }
 
-// Manager-specific: Approve or reject device registration
+// m87 command line: Approve or reject device registration
 pub async fn handle_auth_request(
     api_url: &str,
     token: &str,
@@ -220,7 +220,7 @@ pub async fn handle_auth_request(
     }
 }
 
-// Manager-specific: List all accessible devices
+// m87 command line: List all accessible devices
 pub async fn list_devices(
     api_url: &str,
     token: &str,
