@@ -393,11 +393,12 @@ async fn test_sync_dry_run() -> Result<(), E2EError> {
     .await?;
 
     // Run sync with --dry-run (destination doesn't exist)
+    // Note: --verbose is needed to see the [dry-run] messages in output
     tracing::info!("Running sync with --dry-run...");
     let sync_output = exec_shell(
         &infra.cli,
         &format!(
-            "m87 sync --dry-run /tmp/dry-run-source/ {}:dry-run-dest/ 2>&1",
+            "m87 sync --verbose --dry-run /tmp/dry-run-source/ {}:dry-run-dest/ 2>&1",
             device.name
         ),
     )

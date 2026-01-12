@@ -104,9 +104,10 @@ pub async fn set_owner_reference(
 pub async fn clear_owner_reference(
     container: &ContainerAsync<GenericImage>,
 ) -> Result<(), E2EError> {
+    // Use a simpler sed pattern that handles various JSON formatting
     exec_shell(
         container,
-        r#"sed -i 's/"owner_reference": *"[^"]*"/"owner_reference": null/' /root/.config/m87/config.json"#,
+        r#"sed -i 's/"owner_reference":[[:space:]]*"[^"]*"/"owner_reference": null/' /root/.config/m87/config.json"#,
     )
     .await?;
     Ok(())
