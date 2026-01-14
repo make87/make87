@@ -1,14 +1,15 @@
 use anyhow::{Context, Result, anyhow};
 use m87_shared::deploy_spec::{
-    DeployReportKind, DeploymentRevision, DeploymentRevisionReport, HealthSpec, LivenessSpec,
-    OnFailure, Outcome, RetrySpec, RollbackPolicy, RollbackReport, RunReport, RunSpec, RunState,
-    RunType, Step, StepReport, Undo, UndoMode, WorkdirMode,
+    DeployReportKind, DeploymentRevision, DeploymentRevisionReport, ObserveHooks, OnFailure,
+    Outcome, RetrySpec, RollbackPolicy, RollbackReport, RunReport, RunSpec, RunState, RunType,
+    Step, StepReport, Undo, UndoMode, WorkdirMode,
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    fmt::Display,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{fs, io::AsyncWriteExt, sync::RwLock, time::sleep};
 
@@ -46,6 +47,8 @@ async fn ensure_dirs() -> Result<()> {
 pub struct LocalRunState {
     pub consecutive_health_failures: u32,
     #[serde(default)]
+    pub consecutive_alive_failures: u32,
+    #[serde(default)]
     pub ran_successful: bool,
     #[serde(default)]
     pub reported_once: bool,
@@ -53,6 +56,132 @@ pub struct LocalRunState {
     pub last_health: bool,
     #[serde(default)]
     pub last_alive: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ObserveKind {
+    Liveness,
+    Health,
+}
+
+impl Display for ObserveKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ObserveKind::Liveness => write!(f, "liveness"),
+            ObserveKind::Health => write!(f, "health"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ObserveDecision {
+    is_failure: bool,
+    needs_send: bool,
+    consecutive: u32,
+}
+
+fn now_ms_u32() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u32
+}
+
+impl ObserveKind {
+    fn default_timeout(self) -> Duration {
+        Duration::from_secs(5)
+    }
+
+    fn decide_on_success(&self, st: &LocalRunState) -> bool {
+        match self {
+            ObserveKind::Liveness => st.last_alive == false || !st.reported_once,
+            ObserveKind::Health => {
+                st.last_health != true || st.last_alive != true || !st.reported_once
+            }
+        }
+    }
+
+    fn decide_on_error(
+        &self,
+        st: &LocalRunState,
+        hooks: &ObserveHooks,
+        consecutive: u32,
+    ) -> ObserveDecision {
+        let fails_after = hooks.fails_after.unwrap_or(1);
+        let is_failure = consecutive > 0 && (consecutive % fails_after == 0);
+
+        let needs_send = match self {
+            ObserveKind::Liveness => (st.last_alive == false || !st.reported_once) && is_failure,
+            ObserveKind::Health => (st.last_health == true || !st.reported_once) && is_failure,
+        };
+        // consecutive here is consecutive / fails after since we care about consecutive crashes we consider consecutive failures
+        // round down
+
+        let consecutive = if fails_after == 0 {
+            0
+        } else {
+            consecutive / fails_after
+        };
+
+        ObserveDecision {
+            is_failure,
+            needs_send,
+            consecutive,
+        }
+    }
+
+    fn build_runstate_event(
+        &self,
+        run_id: &str,
+        revision_id: &str,
+        ok: bool,
+        log_tail: Option<String>,
+    ) -> RunState {
+        match self {
+            ObserveKind::Liveness => {
+                if ok {
+                    RunState {
+                        run_id: run_id.to_string(),
+                        revision_id: revision_id.to_string(),
+                        healthy: None,
+                        alive: Some(true),
+                        report_time: now_ms_u32(),
+                        log_tail: None,
+                    }
+                } else {
+                    RunState {
+                        run_id: run_id.to_string(),
+                        revision_id: revision_id.to_string(),
+                        healthy: Some(false),
+                        alive: Some(false),
+                        report_time: now_ms_u32(),
+                        log_tail,
+                    }
+                }
+            }
+            ObserveKind::Health => {
+                if ok {
+                    RunState {
+                        run_id: run_id.to_string(),
+                        revision_id: revision_id.to_string(),
+                        healthy: Some(true),
+                        alive: Some(true),
+                        report_time: now_ms_u32(),
+                        log_tail: None,
+                    }
+                } else {
+                    RunState {
+                        run_id: run_id.to_string(),
+                        revision_id: revision_id.to_string(),
+                        healthy: Some(false),
+                        alive: None,
+                        report_time: now_ms_u32(),
+                        log_tail,
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl LocalRunState {
@@ -88,6 +217,20 @@ impl LocalRunState {
             .with_context(|| format!("Failed to write state file for dir {}", &display_name))?;
 
         Ok(())
+    }
+
+    fn failures_mut(&mut self, kind: ObserveKind) -> &mut u32 {
+        match kind {
+            ObserveKind::Liveness => &mut self.consecutive_alive_failures,
+            ObserveKind::Health => &mut self.consecutive_health_failures,
+        }
+    }
+
+    fn last_mut(&mut self, kind: ObserveKind) -> &mut bool {
+        match kind {
+            ObserveKind::Liveness => &mut self.last_alive,
+            ObserveKind::Health => &mut self.last_health,
+        }
     }
 }
 
@@ -188,7 +331,7 @@ impl RevisionStore {
 }
 
 #[derive(Clone)]
-pub struct UnitManager {
+pub struct DeploymentManager {
     root_dir: PathBuf,
     dirty: Arc<RwLock<HashSet<String>>>,
     log_manager: LogManager,
@@ -196,7 +339,7 @@ pub struct UnitManager {
     deployment_started_at: Arc<RwLock<Option<Instant>>>,
 }
 
-impl UnitManager {
+impl DeploymentManager {
     /// Create a new UnitManager with a custom state store.
     pub async fn new() -> Result<Self> {
         let _ = ensure_dirs().await?;
@@ -245,12 +388,21 @@ impl UnitManager {
 
     /// Replace desired set (authoritative). Marks changes dirty.
     pub async fn set_desired_units(&self, config: DeploymentRevision) -> Result<()> {
-        let new_map = config.get_job_map();
+        let old_config = RevisionStore::get_desired_config()?;
+        if let Some(oc) = &old_config {
+            if oc.get_hash() == config.get_hash() {
+                return Ok(());
+            }
+        }
 
-        let old_desired = match RevisionStore::get_desired_config()? {
+        let new_map = config.get_job_map();
+        let old_desired = match old_config {
             Some(spec) => spec.get_job_map(),
             None => BTreeMap::new(),
         };
+
+        RevisionStore::set_config(&config)?;
+
         let mut dirty = self.dirty.write().await;
 
         // mark changed/added as dirty
@@ -283,7 +435,6 @@ impl UnitManager {
         // Mark deployment start time for stabilization period
         *self.deployment_started_at.write().await = Some(Instant::now());
 
-        RevisionStore::set_config(&config)?;
         Ok(())
     }
 
@@ -368,7 +519,13 @@ impl UnitManager {
                             if now >= due {
                                 next_liveness.insert(id.clone(), now + liv.every);
                                 let _ = self
-                                    .run_liveness_check(&u.id, &desired_revision_id, u, liv)
+                                    .run_observe_check(
+                                        ObserveKind::Liveness,
+                                        &u.id,
+                                        &desired_revision_id,
+                                        u,
+                                        liv,
+                                    )
                                     .await;
                             }
                         }
@@ -377,7 +534,13 @@ impl UnitManager {
                             if now >= due {
                                 next_health.insert(id.clone(), now + health.every);
                                 let _ = self
-                                    .run_health_check(&u.id, &desired_revision_id, u, health)
+                                    .run_observe_check(
+                                        ObserveKind::Health,
+                                        &u.id,
+                                        &desired_revision_id,
+                                        u,
+                                        health,
+                                    )
                                     .await;
                             }
                         }
@@ -421,6 +584,8 @@ impl UnitManager {
                                 let _ = self
                                     .stop_service(&prev_spec, &config.id.clone().unwrap(), &wd)
                                     .await;
+                                // remove id from dirty
+                                self.dirty.write().await.remove(&id);
                             }
                         }
                     }
@@ -455,11 +620,13 @@ impl UnitManager {
                             }
                         }
                     }
+
+                    self.dirty.write().await.remove(&id);
                 }
             }
         }
         // Clear dirty set after processing
-        self.dirty.write().await.clear();
+        // self.dirty.write().await.clear();
 
         Ok(())
     }
@@ -543,216 +710,194 @@ impl UnitManager {
         res
     }
 
-    async fn run_liveness_check(
+    async fn run_observe_check(
         &self,
+        kind: ObserveKind,
         run_id: &str,
         revision_id: &str,
         spec: &RunSpec,
-        liv: &LivenessSpec,
+        hooks: &ObserveHooks,
     ) -> Result<()> {
+        let r = self
+            .run_observe(kind, run_id, revision_id, spec, hooks)
+            .await;
+
+        match r {
+            Ok(d) if d.consecutive > 0 => {
+                tracing::info!("Observe check had {} consecutive failures", d.consecutive);
+                let _ = self
+                    .check_rollback_on_observe_failure(
+                        kind,
+                        revision_id,
+                        r.map(|d| d.clone().consecutive).ok(),
+                    )
+                    .await?;
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn run_observe(
+        &self,
+        kind: ObserveKind,
+        run_id: &str,
+        revision_id: &str,
+        spec: &RunSpec,
+        hooks: &ObserveHooks,
+    ) -> Result<ObserveDecision> {
         let wd = self.resolve_workdir(spec).await?;
         let mut st = LocalRunState::load(&wd)?;
+
+        let observe_timeout = hooks.observe_timeout.unwrap_or(kind.default_timeout());
+
         let res = run_command(
             run_id,
             &wd,
             &spec.env,
-            &liv.check,
-            Some(Duration::from_secs(30)),
-            64, // we dont need to tail the output
+            &hooks.observe,
+            Some(observe_timeout),
+            MAX_TAIL_BYTES,
         )
         .await;
+
         match res {
             Ok(_) => {
-                let needs_send = st.last_health == false || !st.reported_once;
-                st.last_alive = true;
+                *st.failures_mut(kind) = 0;
+
+                let needs_send = kind.decide_on_success(&st);
+
+                match kind {
+                    ObserveKind::Liveness => {
+                        st.last_alive = true;
+                    }
+                    ObserveKind::Health => {
+                        st.last_health = true;
+                        st.last_alive = true;
+                    }
+                }
+
                 LocalRunState::save(&wd, &st)?;
+
                 if needs_send {
-                    let _ = enqueue_event(DeployReportKind::RunState(RunState {
-                        run_id: run_id.to_string(),
-                        revision_id: revision_id.to_string(),
-                        healthy: None,
-                        alive: Some(true),
-                        report_time: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u32,
-                    }))
+                    let _ = enqueue_event(DeployReportKind::RunState(kind.build_runstate_event(
+                        run_id,
+                        revision_id,
+                        true,
+                        None,
+                    )))
                     .await;
+
                     st.reported_once = true;
                     LocalRunState::save(&wd, &st)?;
                 }
-                Ok(())
+
+                Ok(ObserveDecision {
+                    is_failure: false,
+                    needs_send,
+                    consecutive: 0,
+                })
             }
             Err(e) => {
-                let needs_send = st.last_alive == false || !st.reported_once;
-                st.last_alive = false;
+                let failures = st.failures_mut(kind);
+                *failures = failures.saturating_add(1);
+                let consecutive = *failures;
+
+                let decision = kind.decide_on_error(&st, hooks, consecutive);
+
+                *st.last_mut(kind) = false;
+                if let ObserveKind::Liveness = kind {
+                    st.last_alive = false;
+                }
+
                 LocalRunState::save(&wd, &st)?;
-                if needs_send {
-                    let _ = enqueue_event(DeployReportKind::RunState(RunState {
-                        run_id: run_id.to_string(),
-                        revision_id: revision_id.to_string(),
-                        healthy: Some(false),
-                        alive: Some(false),
-                        report_time: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u32,
-                    }))
+
+                let mut on_fail_log_tail = None;
+                if decision.is_failure {
+                    if let Some(report) = &hooks.report {
+                        let report_timeout = hooks.report_timeout.unwrap_or(kind.default_timeout());
+
+                        let r = run_command(
+                            run_id,
+                            &wd,
+                            &spec.env,
+                            report,
+                            Some(report_timeout),
+                            MAX_TAIL_BYTES,
+                        )
+                        .await;
+
+                        on_fail_log_tail = match r {
+                            Ok(tail) => Some(tail),
+                            Err(RunCommandError::Failed(cmd)) => Some(cmd.combined_tail),
+                            Err(RunCommandError::Io(_)) => None,
+                            Err(RunCommandError::Other(_)) => None,
+                        };
+                    }
+                }
+
+                if decision.needs_send {
+                    let observe_log_tail = match &e {
+                        RunCommandError::Failed(cmd) => Some(cmd.combined_tail.clone()),
+                        _ => None,
+                    };
+
+                    let log_tail = merge_log_tails(observe_log_tail, on_fail_log_tail);
+
+                    let _ = enqueue_event(DeployReportKind::RunState(kind.build_runstate_event(
+                        run_id,
+                        revision_id,
+                        false,
+                        log_tail,
+                    )))
                     .await;
+
                     st.reported_once = true;
                     LocalRunState::save(&wd, &st)?;
                 }
 
-                // Check if we should trigger rollback
-                let _ = self.check_rollback_on_liveness_failure(run_id).await;
-
-                Err(e.into())
+                match kind {
+                    ObserveKind::Liveness => Ok(decision),
+                    ObserveKind::Health => Ok(decision),
+                }
             }
         }
     }
 
-    async fn run_health_check(
+    async fn check_rollback_on_observe_failure(
         &self,
-        run_id: &str,
+        kind: ObserveKind,
         revision_id: &str,
-        spec: &RunSpec,
-        health: &HealthSpec,
-    ) -> Result<()> {
-        let wd = self.resolve_workdir(spec).await?;
-        let mut st = LocalRunState::load(&wd)?;
-
-        let res = run_command(
-            run_id,
-            &wd,
-            &spec.env,
-            &health.run,
-            Some(Duration::from_secs(30)),
-            64, // we dont need to tail the output
-        )
-        .await;
-        match res {
-            Ok(_tail) => {
-                st.consecutive_health_failures = 0;
-                let needs_send =
-                    st.last_health != true || st.last_alive != true || !st.reported_once;
-                st.last_health = true;
-                st.last_alive = true;
-                LocalRunState::save(&wd, &st)?;
-                if needs_send {
-                    let _ = enqueue_event(DeployReportKind::RunState(RunState {
-                        run_id: run_id.to_string(),
-                        revision_id: revision_id.to_string(),
-                        healthy: Some(true),
-                        alive: Some(true),
-                        report_time: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u32,
-                    }))
-                    .await;
-                    st.reported_once = true;
-                    LocalRunState::save(&wd, &st)?;
-                }
-                Ok(())
-            }
-            Err(e) => {
-                st.consecutive_health_failures = st.consecutive_health_failures.saturating_add(1);
-                let consecutive = st.consecutive_health_failures;
-                let needs_send = st.last_health == true || !st.reported_once;
-                st.last_health = false;
-                LocalRunState::save(&wd, &st)?;
-
-                if needs_send {
-                    let _ = enqueue_event(DeployReportKind::RunState(RunState {
-                        run_id: run_id.to_string(),
-                        revision_id: revision_id.to_string(),
-                        healthy: Some(false),
-                        alive: None,
-                        report_time: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_millis() as u32,
-                    }))
-                    .await;
-                    st.reported_once = true;
-                    LocalRunState::save(&wd, &st)?;
-                }
-                // Check if we should trigger rollback
-                let _ = self
-                    .check_rollback_on_health_failure(revision_id, consecutive)
-                    .await;
-                Ok(())
-            }
-        }
-    }
-
-    async fn check_rollback_on_health_failure(
-        &self,
-        revision_id: &str,
-        consecutive: u32,
+        consecutive: Option<u32>,
     ) -> Result<()> {
         use m87_shared::deploy_spec::RollbackTrigger;
 
         let policy = match &*self.rollback_policy.read().await {
             Some(p) => p.clone(),
-            None => return Ok(()), // No rollback policy configured
+            None => return Ok(()),
         };
 
-        // Check if we're still in stabilization period
         if !self.is_past_stabilization_period(&policy).await {
-            return Ok(()); // Don't rollback during stabilization
+            return Ok(());
         }
 
-        let should_rollback = match &policy.on_health_failure {
+        let trigger = match kind {
+            ObserveKind::Health => &policy.on_health_failure,
+            ObserveKind::Liveness => &policy.on_liveness_failure,
+        };
+
+        let should_rollback = match trigger {
             RollbackTrigger::Never => false,
-            RollbackTrigger::Any => consecutive > 0,
-            RollbackTrigger::All => {
-                // Check if ALL units have health failures
-                self.check_all_units_failing().await?
-            }
-            RollbackTrigger::Consecutive(n) => consecutive >= *n,
+            RollbackTrigger::Any => consecutive.unwrap_or(0) > 0,
+            RollbackTrigger::All => self.check_all_units_failing().await?,
+            RollbackTrigger::Consecutive(n) => consecutive.unwrap_or(0) >= *n,
         };
 
         if should_rollback {
             tracing::warn!(
-                "Health failure triggered rollback for revision_id {}",
-                revision_id
-            );
-            self.trigger_rollback(revision_id).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn check_rollback_on_liveness_failure(&self, revision_id: &str) -> Result<()> {
-        use m87_shared::deploy_spec::RollbackTrigger;
-
-        let policy = match &*self.rollback_policy.read().await {
-            Some(p) => p.clone(),
-            None => return Ok(()), // No rollback policy configured
-        };
-
-        // Check if we're still in stabilization period
-        if !self.is_past_stabilization_period(&policy).await {
-            return Ok(()); // Don't rollback during stabilization
-        }
-
-        let should_rollback = match &policy.on_liveness_failure {
-            RollbackTrigger::Never => false,
-            RollbackTrigger::Any => true,
-            RollbackTrigger::All => {
-                // Check if ALL units have liveness failures
-                self.check_all_units_failing().await?
-            }
-            RollbackTrigger::Consecutive(_) => {
-                // Liveness doesn't track consecutive failures, treat as "Any"
-                true
-            }
-        };
-
-        if should_rollback {
-            tracing::warn!(
-                "Liveness failure triggered rollback for revision_id {}",
+                "{} failure triggered rollback for revision_id {}",
+                kind,
                 revision_id
             );
             self.trigger_rollback(revision_id).await?;
@@ -1226,5 +1371,14 @@ async fn run_undo(
         }
 
         Err(e) => Err(e),
+    }
+}
+
+fn merge_log_tails(primary: Option<String>, secondary: Option<String>) -> Option<String> {
+    match (primary, secondary) {
+        (Some(a), Some(b)) => Some(format!("{}\n{}", a, b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
     }
 }

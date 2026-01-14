@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use anyhow::{Result, anyhow};
-use m87_shared::device::{DeviceStatus, PublicDevice};
+use m87_shared::device::{AuditLog, DeviceStatus, PublicDevice};
 use tracing::warn;
 
 use crate::util::device_cache;
@@ -140,14 +140,39 @@ pub fn to_resolved(d: &device_cache::CachedDevice) -> ResolvedDevice {
     }
 }
 
-pub async fn get_device_status(name: &str, since: Option<u32>) -> Result<DeviceStatus> {
+pub async fn get_device_status(name: &str) -> Result<DeviceStatus> {
     let resolved = resolve_device_short_id_cached(name).await?;
 
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
     let trust = config.trust_invalid_server_cert;
-    let status =
-        server::get_device_status(&resolved.url, &token, &resolved.id, trust, since).await?;
+    let status = server::get_device_status(&resolved.url, &token, &resolved.id, trust).await?;
 
     Ok(status)
+}
+
+pub async fn get_audit_logs(
+    name: &str,
+    until: Option<String>,
+    since: Option<String>,
+    max: u32,
+) -> Result<Vec<AuditLog>> {
+    let resolved = resolve_device_short_id_cached(name).await?;
+
+    let token = AuthManager::get_cli_token().await?;
+    let config = Config::load()?;
+    let trust = config.trust_invalid_server_cert;
+
+    let logs = server::get_device_audit_logs(
+        &resolved.url,
+        &token,
+        trust,
+        &resolved.id,
+        max,
+        until,
+        since,
+    )
+    .await?;
+
+    Ok(logs)
 }

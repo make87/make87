@@ -7,7 +7,10 @@ use m87_shared::deploy_spec::{
 use mongodb::bson::{doc, oid::ObjectId};
 
 use crate::auth::claims::Claims;
-use crate::models::deploy_spec::{DeployReportDoc, DeployRevisionDoc, to_update_doc};
+use crate::models::audit_logs::AuditLogDoc;
+use crate::models::deploy_spec::{
+    DeployReportDoc, DeployRevisionDoc, to_report_delete_doc, to_update_doc,
+};
 use crate::models::device::DeviceDoc;
 use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
 use crate::util::app_state::AppState;
@@ -105,6 +108,16 @@ async fn create_device_revision(
     let device_oid = ObjectId::parse_str(&device_id)
         .map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
 
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Requested deployment revision creation for {}", &device_oid),
+        &format!("{}", &payload),
+        Some(device_oid.clone()),
+    )
+    .await;
+
     // Ensure caller can access the device
     let dev_opt = claims
         .find_one_with_access(&state.db.devices(), doc! { "_id": device_oid })
@@ -129,6 +142,16 @@ async fn create_device_revision(
     )
     .await?;
 
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Added deployment revision for {}", &device_oid),
+        &format!("{}", &doc.revision),
+        Some(device_oid.clone()),
+    )
+    .await;
+
     Ok(ServerResponse::builder()
         .body(doc.revision)
         .status_code(axum::http::StatusCode::CREATED)
@@ -142,7 +165,6 @@ async fn get_revision_by_id(
 ) -> ServerAppResult<DeploymentRevision> {
     let device_oid = ObjectId::parse_str(&device_id)
         .map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
-
     // Ensure caller can access device
     let doc_opt = claims
         .find_one_with_access(
@@ -170,7 +192,21 @@ async fn update_revision_by_id(
     let device_oid = ObjectId::parse_str(&device_id)
         .map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
 
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!(
+            "Requested deployment revision update on {} for device {}",
+            &id, &device_oid
+        ),
+        &format!("{}", &payload),
+        Some(device_oid.clone()),
+    )
+    .await;
+
     let (update_doc, extra_filter) = to_update_doc(&payload)?;
+    let report_delete_doc = to_report_delete_doc(&payload, &id, &device_oid)?;
 
     // if its an update with a new revision that is set as active. set the old active to false
     let set_inactive = match &payload.active {
@@ -179,7 +215,7 @@ async fn update_revision_by_id(
                 DeployRevisionDoc::get_active_device_deployment(&state.db, device_oid).await?;
             match out {
                 Some(doc) => {
-                    let filter = doc! { "revision.id": doc.id, "device_id": &device_oid };
+                    let filter = doc! { "revision.id": &doc.id, "device_id": &device_oid };
                     let update_doc = doc! { "active": false };
                     Some((filter, update_doc))
                 }
@@ -189,7 +225,7 @@ async fn update_revision_by_id(
         _ => None,
     };
 
-    let mut filter = doc! { "revision.id": id, "device_id": &device_oid };
+    let mut filter = doc! { "revision.id": &id, "device_id": &device_oid };
     if let Some(extra) = extra_filter {
         filter.extend(extra);
     }
@@ -221,6 +257,31 @@ async fn update_revision_by_id(
     // update device last_deployment_hash. Pesimistic update as we might update an inactive revision. TODO for later
     let _ = DeviceDoc::invalidate_deployment_hash(&state.db, &device_oid).await?;
 
+    if let Some(delete_doc) = report_delete_doc {
+        let res = state.db.deploy_reports().delete_many(delete_doc).await?;
+        tracing::info!("Deleted {} deploy reports", res.deleted_count);
+    }
+
+    let latest_doc = state
+        .db
+        .deploy_revisions()
+        .find_one(doc! { "revision.id": &id, "device_id": &device_oid })
+        .await?;
+    if let Some(doc) = latest_doc {
+        let _ = AuditLogDoc::add(
+            &state.db,
+            &claims,
+            &state.config,
+            &format!(
+                "Updated deployment revision {} for device {}",
+                &id, &device_oid
+            ),
+            &format!("{}", &doc.revision),
+            Some(device_oid.clone()),
+        )
+        .await;
+    }
+
     Ok(ServerResponse::builder()
         .status_code(axum::http::StatusCode::NO_CONTENT)
         .build())
@@ -234,16 +295,42 @@ async fn delete_revision(
     let device_oid = ObjectId::parse_str(&device_id)
         .map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
 
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!(
+            "Requesting deployment revision deletion {} for device {}",
+            &id, &device_oid
+        ),
+        "",
+        Some(device_oid.clone()),
+    )
+    .await;
+
     // authorize by selecting first
     let success = claims
         .delete_one_with_access(
             &state.db.deploy_revisions(),
-            doc! { "revision.id": id, "device_id": device_oid },
+            doc! { "revision.id": &id, "device_id": &device_oid },
         )
         .await?;
     if !success {
         return Err(ServerError::not_found("Revision not found"));
     }
+
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!(
+            "Deleted deployment revision {} for device {}",
+            &id, &device_oid
+        ),
+        "",
+        Some(device_oid.clone()),
+    )
+    .await;
 
     Ok(ServerResponse::builder()
         .status_code(axum::http::StatusCode::NO_CONTENT)

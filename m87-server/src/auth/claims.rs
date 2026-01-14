@@ -4,7 +4,11 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use axum_extra::TypedHeader;
 use futures::TryStreamExt;
 use headers::{Authorization, authorization::Bearer};
-use mongodb::{Collection, bson::Document, options::FindOptions};
+use mongodb::{
+    Collection,
+    bson::{Document, oid::ObjectId},
+    options::FindOptions,
+};
 
 use crate::{
     auth::access_control::AccessControlled,
@@ -23,6 +27,9 @@ use crate::{
 pub struct Claims {
     pub roles: Vec<RoleDoc>,
     pub is_admin: bool,
+    pub user_name: String,
+    pub user_email: String,
+    pub user_id: Option<ObjectId>,
 }
 
 impl FromRequestParts<AppState> for Claims {
@@ -82,11 +89,17 @@ impl Claims {
                 created_at: None,
             });
 
-            let is_admin = match user.email {
-                Some(email) => config.admin_emails.contains(&email),
+            let is_admin = match &user.email {
+                Some(email) => config.admin_emails.contains(email),
                 None => false,
             };
-            Ok(Self { roles, is_admin })
+            Ok(Self {
+                roles,
+                is_admin,
+                user_name: user.name.clone().unwrap_or("unknown".to_string()),
+                user_email: user.email.clone().unwrap_or("unknown".to_string()),
+                user_id: user.id.clone(),
+            })
         } else {
             // check if token is config.admin_key
             match &config.admin_key {
@@ -95,6 +108,9 @@ impl Claims {
                         return Ok(Self {
                             roles: vec![],
                             is_admin: true,
+                            user_name: "admin".to_string(),
+                            user_email: "".to_string(),
+                            user_id: None,
                         });
                     }
                 }
@@ -107,6 +123,9 @@ impl Claims {
             Ok(Self {
                 roles,
                 is_admin: false,
+                user_name: format!("API Key {}", key_doc.name),
+                user_email: "".to_string(),
+                user_id: None,
             })
         }
     }

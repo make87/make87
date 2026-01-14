@@ -8,7 +8,7 @@ use m87_shared::{
     device::ObserveStatus,
 };
 use mongodb::{
-    bson::{Bson, DateTime as BsonDateTime, Document, doc, oid::ObjectId, to_bson},
+    bson::{DateTime as BsonDateTime, Document, doc, oid::ObjectId, to_bson},
     options::FindOptions,
 };
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,6 @@ use tokio_stream::StreamExt;
 use crate::{
     auth::access_control::AccessControlled,
     db::Mongo,
-    models::device,
     response::{ServerError, ServerResult},
     util::pagination::RequestPagination,
 };
@@ -115,6 +114,43 @@ pub fn to_update_doc(
 
     if let Some(active) = body.active {
         return Ok((doc! { "$set": { "active": active } }, None));
+    }
+
+    Err(ServerError::internal_error("This should be unreachable"))
+}
+
+pub fn to_report_delete_doc(
+    body: &UpdateDeployRevisionBody,
+    revision_id: &str,
+    device_id: &ObjectId,
+) -> ServerResult<Option<Document>> {
+    let mut which = 0;
+    if body.revision.is_some() {
+        which += 1;
+    }
+    if body.remove_run_spec_id.is_some() {
+        which += 1;
+    }
+
+    if which == 0 {
+        return Ok(None);
+    }
+    if which > 1 {
+        return Err(ServerError::bad_request(
+            "only one field may be set per update",
+        ));
+    }
+
+    if let Some(_) = &body.revision {
+        return Ok(Some(
+            doc! {"revision_id": revision_id, "device_id": device_id },
+        ));
+    }
+
+    if let Some(id) = &body.remove_run_spec_id {
+        return Ok(Some(
+            doc! { "kind.data.run_id": id, "revision_id": revision_id, "device_id": device_id },
+        ));
     }
 
     Err(ServerError::internal_error("This should be unreachable"))
@@ -246,58 +282,58 @@ pub struct CreateDeployReportBody {
 }
 
 impl DeployReportDoc {
-    fn upsert_filter(body: &CreateDeployReportBody) -> ServerResult<Document> {
-        let base = doc! {
-            "device_id": body.device_id,
-            "revision_id": &body.revision_id,
-        };
+    // fn upsert_filter(body: &CreateDeployReportBody) -> ServerResult<Document> {
+    //     let base = doc! {
+    //         "device_id": body.device_id,
+    //         "revision_id": &body.revision_id,
+    //     };
 
-        let f = match &body.kind {
-            DeployReportKind::DeploymentRevisionReport(_) => {
-                doc! { "kind.type": "DeploymentRevisionReport" }
-            }
-            DeployReportKind::RunReport(r) => {
-                doc! {
-                    "kind.type": "RunReport",
-                    "kind.data.run_id": &r.run_id,
-                }
-            }
-            DeployReportKind::StepReport(s) => {
-                // Match on (run_id, name, attempts) as you requested.
-                // name is Option<String> -> match null when None.
-                let name_bson = match &s.name {
-                    Some(n) => Bson::String(n.clone()),
-                    None => Bson::Null,
-                };
+    //     let f = match &body.kind {
+    //         DeployReportKind::DeploymentRevisionReport(_) => {
+    //             doc! { "kind.type": "DeploymentRevisionReport" }
+    //         }
+    //         DeployReportKind::RunReport(r) => {
+    //             doc! {
+    //                 "kind.type": "RunReport",
+    //                 "kind.data.run_id": &r.run_id,
+    //             }
+    //         }
+    //         DeployReportKind::StepReport(s) => {
+    //             // Match on (run_id, name, attempts) as you requested.
+    //             // name is Option<String> -> match null when None.
+    //             let name_bson = match &s.name {
+    //                 Some(n) => Bson::String(n.clone()),
+    //                 None => Bson::Null,
+    //             };
 
-                doc! {
-                    "kind.type": "StepReport",
-                    "kind.data.run_id": &s.run_id,
-                    "kind.data.name": name_bson,
-                    "kind.data.attempts": Bson::Int32(s.attempts as i32),
-                }
-            }
-            DeployReportKind::RollbackReport(_) => {
-                // If you can have multiple rollback reports per revision and want only one, this is fine.
-                // If you want to key by something else, add it here.
-                doc! { "kind.type": "RollbackReport" }
-            }
-            DeployReportKind::RunState(s) => {
-                doc! {
-                    "kind.type": "RunState",
-                    "kind.data.run_id": &s.run_id,
-                }
-            }
-        };
+    //             doc! {
+    //                 "kind.type": "StepReport",
+    //                 "kind.data.run_id": &s.run_id,
+    //                 "kind.data.name": name_bson,
+    //                 "kind.data.attempts": Bson::Int32(s.attempts as i32),
+    //             }
+    //         }
+    //         DeployReportKind::RollbackReport(_) => {
+    //             // If you can have multiple rollback reports per revision and want only one, this is fine.
+    //             // If you want to key by something else, add it here.
+    //             doc! { "kind.type": "RollbackReport" }
+    //         }
+    //         DeployReportKind::RunState(s) => {
+    //             doc! {
+    //                 "kind.type": "RunState",
+    //                 "kind.data.run_id": &s.run_id,
+    //             }
+    //         }
+    //     };
 
-        Ok(doc! { "$and": [base, f] })
-    }
+    //     Ok(doc! { "$and": [base, f] })
+    // }
 
     pub async fn get_device_observations_since(
         db: &Arc<Mongo>,
         revision_id: &str,
         device_id: &ObjectId,
-        since: u32,
+        // since: u32,
     ) -> ServerResult<Vec<ObserveStatus>> {
         let filter = doc! {
             "device_id": device_id,
@@ -388,6 +424,29 @@ impl DeployReportDoc {
         body: CreateDeployReportBody,
     ) -> ServerResult<Self> {
         // let filter = Self::upsert_filter(&body)?;
+        // check if device id + revision + optional kind.data.run_id still exist. If not ignore
+        let mut check_doc = doc! {
+            "device_id": &body.device_id,
+            "revision_id": &body.revision_id,
+        };
+        if let Some(run_id) = body.kind.get_run_id() {
+            check_doc.insert("kind.data.run_id", run_id);
+        }
+        let exists = db
+            .deploy_revisions()
+            .find_one(check_doc)
+            .await
+            .map_err(|e| {
+                ServerError::internal_error(&format!(
+                    "Failed to check deploy revision existence: {:?}",
+                    e
+                ))
+            })
+            .map(|doc| doc.is_some())
+            .unwrap_or(false);
+        if !exists {
+            return Err(ServerError::not_found("Deploy revision not found"));
+        }
 
         let now = BsonDateTime::now();
         // let kind_bson = to_bson(&body.kind)
@@ -450,23 +509,5 @@ impl DeployReportDoc {
             .await
             .map_err(|_| ServerError::internal_error("Cursor decode failed"))?;
         Ok(results)
-    }
-
-    pub async fn mark_revision_seen(
-        db: &Arc<Mongo>,
-        device_id: ObjectId,
-        revision_id: &str,
-        seen: bool,
-    ) -> ServerResult<u64> {
-        let res = db
-            .deploy_reports()
-            .update_many(
-                doc! { "device_id": device_id, "revision_id": revision_id },
-                doc! { "$set": { "seen": seen } },
-            )
-            .await
-            .map_err(|_| ServerError::internal_error("Failed to update deploy reports"))?;
-
-        Ok(res.modified_count)
     }
 }

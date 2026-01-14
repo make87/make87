@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use m87_shared::deploy_spec::{
-    CreateDeployRevisionBody, DeploymentRevision, UpdateDeployRevisionBody,
+    CreateDeployRevisionBody, DeployReport, DeploymentRevision, UpdateDeployRevisionBody,
 };
-use m87_shared::device::{DeviceStatus, UpdateDeviceBody};
+use m87_shared::device::{AuditLog, DeviceStatus, UpdateDeviceBody};
 use reqwest::Client;
 
 use tracing::error;
@@ -292,7 +292,6 @@ pub async fn get_device_status(
     token: &str,
     device_id: &str,
     trust_invalid_server_cert: bool,
-    since: Option<u32>,
 ) -> Result<DeviceStatus> {
     let client = get_client(trust_invalid_server_cert)?;
 
@@ -456,6 +455,55 @@ pub async fn get_active_deployment_id(
     let client = get_client(trust_invalid_server_cert)?;
 
     let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn get_deployment_reports(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    device_id: &str,
+    deployment_id: &str,
+) -> Result<Vec<DeployReport>> {
+    let url = format!(
+        "{}/device/{}/revisions/{}/reports",
+        api_url, device_id, deployment_id
+    );
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn get_device_audit_logs(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    device_id: &str,
+    limit: u32,
+    since: Option<String>, // RFC3339, e.g. "2026-01-01T00:00:00Z"
+    until: Option<String>,
+) -> Result<Vec<AuditLog>> {
+    let url = format!("{}/device/{}/audit_logs", api_url, device_id);
+    let client = get_client(trust_invalid_server_cert)?;
+    // Build query params
+    let mut q: Vec<(&str, String)> = vec![("limit", limit.to_string())];
+    if let Some(s) = since {
+        q.push(("since", s.to_string()));
+    }
+    if let Some(u) = until {
+        q.push(("until", u.to_string()));
+    }
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).query(&q).send())?;
 
     match res.error_for_status() {
         Ok(r) => Ok(r.json().await?),

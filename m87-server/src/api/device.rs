@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use m87_shared::device::{AuditLog, DeviceStatus};
@@ -87,7 +87,15 @@ async fn update_device_by_id(
 ) -> ServerAppResult<PublicDevice> {
     let device_id =
         ObjectId::parse_str(&id).map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
-
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Requested device update {}", &device_id),
+        &format!("{}", &payload),
+        Some(device_id.clone()),
+    )
+    .await;
     // Build the Mongo update document
     let update_doc = payload.to_update_doc(); // implement this helper on UpdateDeviceBody
 
@@ -106,8 +114,19 @@ async fn update_device_by_id(
         None => return Err(ServerError::not_found("Device not found after update")),
     };
 
+    let pub_device = updated_device.into();
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Updated device {}", &device_id),
+        &format!("{}", &pub_device),
+        Some(device_id.clone()),
+    )
+    .await;
+
     Ok(ServerResponse::builder()
-        .body(updated_device.into())
+        .body(pub_device)
         .status_code(axum::http::StatusCode::OK)
         .build())
 }
@@ -118,13 +137,30 @@ async fn delete_device(
     Path(id): Path<String>,
 ) -> ServerAppResult<()> {
     let device_oid = ObjectId::parse_str(&id)?;
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Requested device deletion {}", &device_oid),
+        "",
+        Some(device_oid.clone()),
+    )
+    .await;
     let device_opt = claims
         .find_one_with_access(&state.db.devices(), doc! { "_id": device_oid })
         .await?;
     let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
 
     let _ = device.remove_device(&claims, &state.db).await?;
-
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Deleted device {}", &device_oid),
+        "",
+        Some(device_oid.clone()),
+    )
+    .await;
     Ok(ServerResponse::builder()
         .status_code(axum::http::StatusCode::NO_CONTENT)
         .build())
@@ -171,7 +207,7 @@ async fn get_device_status(
         .await?;
     let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    let status = device.get_status(&state.db, 0).await?;
+    let status = device.get_status(&state.db).await?;
 
     Ok(ServerResponse::builder()
         .body(status)

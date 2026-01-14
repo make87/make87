@@ -1,6 +1,6 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use m87_shared::deploy_spec::{
-    CommandSpec, CreateDeployRevisionBody, DeploymentRevision, HealthSpec, LogLimit, LogSpec,
+    CommandSpec, CreateDeployRevisionBody, DeployReport, DeploymentRevision, LogSpec, ObserveHooks,
     ObserveSpec, OnFailure, RebootMode, RetrySpec, RunSpec, RunType, Step, StopSpec, Undo,
     UndoMode, UpdateDeployRevisionBody, Workdir, WorkdirMode,
 };
@@ -171,9 +171,7 @@ pub async fn deploy_file(
 
 pub async fn undeploy_file(
     device_name: &str,
-    file: PathBuf,
-    ty: SpecType,
-    name: Option<String>,
+    job_id: String,
     deployment_id: Option<String>,
 ) -> Result<()> {
     let (device_id, api_url, token, trust_invalid) = ctx_for_device(device_name).await?;
@@ -190,42 +188,6 @@ pub async fn undeploy_file(
             let new_id = new.id.unwrap();
             tracing::info!("Created new deployment with ID: {}", new_id);
             new_id
-        }
-    };
-
-    // Convert input -> run-spec YAML string (typed for runspec)
-    let job_id = match ty {
-        SpecType::Compose => {
-            let run_spec = compose_file_to_runspec_yaml(&file, name.as_deref()).await?;
-            run_spec.get_hash()
-        }
-        SpecType::Runspec => {
-            let s = load_file_to_string(&file)?;
-            RunSpec::from_yaml(&s)?.get_hash()
-        }
-        SpecType::Auto => {
-            let s = load_file_to_string(&file)?;
-            if is_docker_compose_yaml(&s) {
-                let run_spec = compose_file_to_runspec_yaml(&file, name.as_deref()).await?;
-                run_spec.get_hash()
-            } else {
-                match RunSpec::from_yaml(&s) {
-                    Ok(r) => r.get_hash(),
-                    Err(_) => {
-                        let deployment = DeploymentRevision::from_yaml(&s);
-                        if let Ok(_) = deployment {
-                            bail!(
-                                "Undeploy is only supporting undeployment of Jobs not entire deployments"
-                            );
-                        } else {
-                            bail!("Failed to parse deployment YAML");
-                        }
-                    }
-                }
-            }
-        }
-        SpecType::Deployment => {
-            bail!("Undeploy is only supporting undeployment of Jobs not entire deployments");
         }
     };
 
@@ -253,7 +215,7 @@ pub async fn get_deployments(device_name: &str) -> Result<Vec<DeploymentRevision
     Ok(deployments)
 }
 
-pub async fn get_active_deployment(device_name: &str) -> Result<Option<String>> {
+pub async fn get_active_deployment_id(device_name: &str) -> Result<Option<String>> {
     let (device_id, api_url, token, trust_invalid) = ctx_for_device(device_name).await?;
 
     let active =
@@ -602,7 +564,9 @@ pub async fn compose_file_to_runspec_yaml(file: &Path, name: Option<&str>) -> Re
     {
         stem.to_string()
     } else {
-        bail!("cannot derive RunSpec id: pass _name or use a compose file with a valid name");
+        return Err(anyhow!(
+            "cannot derive RunSpec id: pass name or use a compose file with a valid name"
+        ));
     };
 
     let mut files = BTreeMap::new();
@@ -610,13 +574,7 @@ pub async fn compose_file_to_runspec_yaml(file: &Path, name: Option<&str>) -> Re
 
     let pull = Step {
         name: Some("pull".to_string()),
-        run: CommandSpec::Argv(vec![
-            "docker".into(),
-            "compose".into(),
-            "-f".into(),
-            file_name.clone(),
-            "pull".into(),
-        ]),
+        run: CommandSpec::Sh(format!("docker compose -f {} pull", file_name)),
         timeout: Some(Duration::from_secs(15 * 60)),
         retry: Some(RetrySpec {
             attempts: 2,
@@ -628,26 +586,17 @@ pub async fn compose_file_to_runspec_yaml(file: &Path, name: Option<&str>) -> Re
 
     let up = Step {
         name: Some("up".to_string()),
-        run: CommandSpec::Argv(vec![
-            "docker".into(),
-            "compose".into(),
-            "-f".into(),
-            file_name.clone(),
-            "up".into(),
-            "-d".into(),
-            "--remove-orphans".into(),
-        ]),
+        run: CommandSpec::Sh(format!(
+            "docker compose -f {} up -d --remove-orphans",
+            file_name
+        )),
         timeout: Some(Duration::from_secs(10 * 60)),
         retry: None,
         undo: Some(Undo {
-            run: CommandSpec::Argv(vec![
-                "docker".into(),
-                "compose".into(),
-                "-f".into(),
-                file_name.clone(),
-                "down".into(),
-                "--remove-orphans".into(),
-            ]),
+            run: CommandSpec::Sh(format!(
+                "docker compose -f {} down --remove-orphans",
+                file_name
+            )),
             timeout: Some(Duration::from_secs(5 * 60)),
         }),
     };
@@ -655,14 +604,10 @@ pub async fn compose_file_to_runspec_yaml(file: &Path, name: Option<&str>) -> Re
     let stop = StopSpec {
         steps: vec![Step {
             name: Some("down".to_string()),
-            run: CommandSpec::Argv(vec![
-                "docker".into(),
-                "compose".into(),
-                "-f".into(),
-                file_name.clone(),
-                "down".into(),
-                "--remove-orphans".into(),
-            ]),
+            run: CommandSpec::Sh(format!(
+                "docker compose -f {} down --remove-orphans",
+                file_name
+            )),
             timeout: Some(Duration::from_secs(5 * 60)),
             retry: None,
             undo: None,
@@ -671,46 +616,35 @@ pub async fn compose_file_to_runspec_yaml(file: &Path, name: Option<&str>) -> Re
 
     let observe = ObserveSpec {
         logs: Some(LogSpec {
-            tail: CommandSpec::Argv(vec![
-                "docker".into(),
-                "compose".into(),
-                "-f".into(),
-                file_name.clone(),
-                "logs".into(),
-                "--timestamps".into(),
-                "--no-color".into(),
-                "--tail".into(),
-                "200".into(),
-            ]),
-            follow: Some(CommandSpec::Argv(vec![
-                "docker".into(),
-                "compose".into(),
-                "-f".into(),
-                file_name.clone(),
-                "logs".into(),
-                "-f".into(),
-                "--timestamps".into(),
-                "--no-color".into(),
-            ])),
-            since: Some(Duration::from_secs(30 * 60)),
-            limits: Some(LogLimit::default()),
+            follow: Some(CommandSpec::Sh(format!(
+                "docker compose -f {} logs -f --timestamps",
+                file_name
+            ))),
         }),
-        liveness: None,
-        health: Some(HealthSpec {
-            every: Duration::from_secs(30),
-            run: CommandSpec::Sh(format!(
-                r#" docker compose -f "{file}" ps \
-              --status exited \
-              --status restarting \
-              --status dead \
-              --status paused \
-              --status removing \
-              --status created \
-              >/dev/null 2>&1 || exit 0
-            exit 1"#,
+        liveness: Some(ObserveHooks {
+            every: Duration::from_secs(10),
+            observe: CommandSpec::Sh(format!(
+                r#"docker compose -f "{file}" ps --status exited --status restarting --status dead --status paused --status removing --status created >/dev/null 2>&1 || exit 0; exit 1"#,
                 file = file_name
             )),
-            fails_after: 3,
+            record: Some(CommandSpec::Sh(format!(
+                "docker compose -f {} logs --timestamps --tail 200",
+                file_name
+            ))),
+            ..Default::default()
+        }),
+        health: Some(ObserveHooks {
+            every: Duration::from_secs(10),
+            observe: CommandSpec::Sh(format!(
+                r#"docker compose -f "{file}" ps --status exited --status restarting --status dead --status paused --status removing --status created >/dev/null 2>&1 || exit 0; exit 1"#,
+                file = file_name
+            )),
+            record: Some(CommandSpec::Sh(format!(
+                "docker compose -f {} logs --timestamps --tail 200",
+                file_name
+            ))),
+            fails_after: Some(3),
+            ..Default::default()
         }),
     };
 
@@ -733,4 +667,18 @@ pub async fn compose_file_to_runspec_yaml(file: &Path, name: Option<&str>) -> Re
         RebootMode::None,
         Some(observe),
     ))
+}
+
+pub async fn get_deployment_reports(
+    device_name: &str,
+    deployment_id: &str,
+) -> Result<Vec<DeployReport>> {
+    let (device_id, api_url, token, trust_invalid) = ctx_for_device(device_name).await?;
+
+    let reports =
+        server::get_deployment_reports(&api_url, &token, trust_invalid, &device_id, &deployment_id)
+            .await
+            .context("failed to fetch source deployment")?;
+
+    Ok(reports)
 }

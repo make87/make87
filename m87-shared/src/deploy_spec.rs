@@ -19,8 +19,15 @@ pub struct DeploymentRevision {
     #[serde(default)]
     pub id: Option<String>,
     pub jobs: Vec<RunSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback: Option<RollbackPolicy>,
+}
+
+impl Display for DeploymentRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let json = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", json)
+    }
 }
 
 impl DeploymentRevision {
@@ -99,25 +106,40 @@ impl DeploymentRevision {
 pub struct CreateDeployRevisionBody {
     /// YAML string for DeploymentRevision.
     pub revision: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
+}
+
+impl Display for CreateDeployRevisionBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let json = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", json)
+    }
 }
 
 #[derive(Deserialize, Serialize, Default)]
 pub struct UpdateDeployRevisionBody {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
     // yaml of the new run spec
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub add_run_spec: Option<String>,
     // yaml of the updated run spec
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_run_spec: Option<String>,
     // id of the run spec to remove
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remove_run_spec_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active: Option<bool>,
+}
+
+impl Display for UpdateDeployRevisionBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // converto json and rint
+        let json = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", json)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,23 +195,23 @@ pub struct RunSpec {
     pub enabled: bool,
 
     // service / job only
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<Workdir>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 
     #[serde(default)]
     pub steps: Vec<Step>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_failure: Option<OnFailure>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopSpec>,
     #[serde(default)]
     pub reboot: RebootMode,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observe: Option<ObserveSpec>,
 }
 
@@ -260,26 +282,35 @@ pub enum RebootMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub run: CommandSpec,
-    #[serde(default)]
+    #[serde(
+        default,
+        with = "option_duration_human",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub timeout: Option<Duration>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetrySpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo: Option<Undo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Undo {
     pub run: CommandSpec,
-    #[serde(default)]
+    #[serde(
+        default,
+        with = "option_duration_human",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OnFailure {
+    // skip if default
     #[serde(default)]
     pub undo: UndoMode,
     #[serde(default)]
@@ -297,8 +328,9 @@ pub enum UndoMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrySpec {
     pub attempts: u32,
+    #[serde(with = "duration_human")]
     pub backoff: Duration,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_exit_codes: Option<Vec<i32>>,
 }
 
@@ -327,59 +359,78 @@ pub struct StopSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObserveSpec {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logs: Option<LogSpec>,
-    #[serde(default)]
-    pub liveness: Option<LivenessSpec>,
-    #[serde(default)]
-    pub health: Option<HealthSpec>,
-}
-
-fn default_max_log_bytes() -> u64 {
-    262144
-}
-
-fn default_max_log_lines() -> u32 {
-    1024
-}
-
-fn default_log_timeout() -> Duration {
-    Duration::from_secs(5)
-}
-
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct LogLimit {
-    #[serde(default = "default_max_log_bytes")]
-    pub max_bytes: u64,
-    #[serde(default = "default_max_log_lines")]
-    pub max_lines: u32,
-    #[serde(default = "default_log_timeout")]
-    pub timeout: Duration,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<ObserveHooks>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<ObserveHooks>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogSpec {
-    pub tail: CommandSpec,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub follow: Option<CommandSpec>,
-    #[serde(default)]
-    pub since: Option<Duration>,
-    #[serde(default)]
-    pub limits: Option<LogLimit>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LivenessSpec {
+pub struct ObserveHooks {
+    #[serde(with = "duration_human")]
     pub every: Duration,
-    pub check: CommandSpec,
+    pub observe: CommandSpec,
+    #[serde(
+        default,
+        with = "option_duration_human",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub observe_timeout: Option<Duration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<CommandSpec>,
+    #[serde(
+        default,
+        with = "option_duration_human",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub record_timeout: Option<Duration>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<CommandSpec>,
+    #[serde(
+        default,
+        with = "option_duration_human",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub report_timeout: Option<Duration>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fails_after: Option<u32>,
+}
+impl Default for ObserveHooks {
+    fn default() -> Self {
+        Self {
+            every: Duration::from_secs(10),
+            observe: CommandSpec::Sh("echo 'No observe command specified'".to_string()),
+            observe_timeout: None,
+            record: None,
+            record_timeout: None,
+            report: None,
+            report_timeout: None,
+            fails_after: None,
+        }
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthSpec {
-    pub every: Duration,
-    pub run: CommandSpec,
-    pub fails_after: u32,
-}
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// pub struct LivenessSpec {
+//     #[serde(flatten)]
+//     pub hooks: ObserveHooks,
+// }
+
+// #[derive(Debug, Clone, Serialize, Deserialize)]
+// pub struct HealthSpec {
+//     #[serde(flatten)]
+//     pub hooks: ObserveHooks,
+// }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 pub struct Workdir {
@@ -402,6 +453,17 @@ pub enum WorkdirMode {
 pub enum Outcome {
     Success,
     Failed,
+    Unknown,
+}
+
+impl Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Outcome::Success => write!(f, "success"),
+            Outcome::Failed => write!(f, "failed"),
+            Outcome::Unknown => write!(f, "unknown"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -477,6 +539,8 @@ pub struct RunState {
     pub healthy: Option<bool>,
     pub alive: Option<bool>,
     pub report_time: u32,
+    #[serde(default)]
+    pub log_tail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -499,6 +563,16 @@ impl DeployReportKind {
             DeployReportKind::RunState(r) => &r.revision_id,
         }
     }
+
+    pub fn get_run_id(&self) -> Option<String> {
+        match self {
+            DeployReportKind::DeploymentRevisionReport(_) => None,
+            DeployReportKind::RunReport(r) => Some(r.run_id.clone()),
+            DeployReportKind::StepReport(r) => Some(r.run_id.clone()),
+            DeployReportKind::RollbackReport(_) => None,
+            DeployReportKind::RunState(r) => Some(r.run_id.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -512,4 +586,84 @@ pub struct DeployReport {
 
     /// When the report was received/created
     pub created_at: u64,
+}
+
+pub mod duration_human {
+    use super::*;
+    use serde::{
+        Deserializer, Serializer,
+        de::{self, Visitor},
+    };
+    use std::fmt;
+
+    pub fn serialize<S>(d: &Duration, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let secs = d.as_secs();
+
+        if secs % 3600 == 0 {
+            s.serialize_str(&format!("{}h", secs / 3600))
+        } else if secs % 60 == 0 {
+            s.serialize_str(&format!("{}m", secs / 60))
+        } else {
+            s.serialize_str(&format!("{}s", secs))
+        }
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DurationVisitor;
+
+        impl<'de> Visitor<'de> for DurationVisitor {
+            type Value = Duration;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a duration like 10s, 5m, or 2h")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let (num, unit) = v.chars().partition::<String, _>(|c| c.is_ascii_digit());
+
+                let value: u64 = num.parse().map_err(E::custom)?;
+
+                match unit.as_str() {
+                    "s" => Ok(Duration::from_secs(value)),
+                    "m" => Ok(Duration::from_secs(value * 60)),
+                    "h" => Ok(Duration::from_secs(value * 3600)),
+                    _ => Err(E::custom("invalid duration unit (use s, m, h)")),
+                }
+            }
+        }
+
+        d.deserialize_str(DurationVisitor)
+    }
+}
+
+pub mod option_duration_human {
+    use super::duration_human;
+    use serde::{Deserializer, Serializer};
+    use std::time::Duration;
+
+    pub fn serialize<S>(v: &Option<Duration>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match v {
+            Some(d) => duration_human::serialize(d, s),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(d: D) -> Result<Option<Duration>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Some(duration_human::deserialize(d)?))
+    }
 }

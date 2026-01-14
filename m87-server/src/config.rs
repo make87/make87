@@ -18,6 +18,10 @@ fn default_report_retention_days() -> u32 {
     7
 }
 
+fn default_audit_retention_days() -> u32 {
+    7
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub mongo_uri: String,
@@ -35,6 +39,8 @@ pub struct AppConfig {
     pub certificate_path: String,
     #[serde(default = "default_report_retention_days")]
     pub report_retention_days: u32,
+    #[serde(default = "default_audit_retention_days")]
+    pub audit_retention_days: u32,
 }
 
 impl AppConfig {
@@ -86,6 +92,10 @@ impl AppConfig {
             .unwrap_or_else(|_| "7".to_string())
             .parse()
             .unwrap();
+        let audit_retention_days = std::env::var("AUDIT_RETENTION_DAYS")
+            .unwrap_or_else(|_| "7".to_string())
+            .parse()
+            .unwrap();
 
         Ok(Self {
             mongo_uri,
@@ -101,6 +111,7 @@ impl AppConfig {
             certificate_path,
             admin_key,
             report_retention_days,
+            audit_retention_days,
         })
     }
 }

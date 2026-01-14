@@ -4,10 +4,10 @@ use tokio::io::AsyncWriteExt;
 
 use crate::util::format;
 use crate::{
-    device::deployment_manager::UnitManager, streams::quic::QuicIo, util::logging::get_log_rx,
+    device::deployment_manager::DeploymentManager, streams::quic::QuicIo, util::logging::get_log_rx,
 };
 
-pub async fn handle_logs_io(io: &mut QuicIo, unit_manager: Arc<UnitManager>) -> Result<()> {
+pub async fn handle_logs_io(io: &mut QuicIo, unit_manager: Arc<DeploymentManager>) -> Result<()> {
     let _ = unit_manager.start_log_follow().await?;
     let mut app_rx = match get_log_rx() {
         Some(r) => r,

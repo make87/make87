@@ -1,123 +1,14 @@
-use chrono::{DateTime, Utc};
-
+use crate::{
+    tui::helper::{
+        Align, ColSpec, RenderOpts, Table, bold, cyan, dim, format_relative_time, green,
+        pending_badge, red, status_badge, terminal_width, yellow,
+    },
+    util::device_cache::try_get_name_from_long_id,
+};
 use m87_shared::{
     auth::DeviceAuthRequest,
-    device::{DeviceStatus, PublicDevice},
+    device::{AuditLog, DeviceStatus, PublicDevice},
 };
-
-const RESET: &str = "\x1b[0m";
-const BOLD: &str = "\x1b[1m";
-const DIM: &str = "\x1b[2m";
-
-const RED: &str = "\x1b[31m";
-const GREEN: &str = "\x1b[32m";
-const YELLOW: &str = "\x1b[33m";
-const CYAN: &str = "\x1b[36m";
-
-fn b(s: &str) -> String {
-    format!("{BOLD}{s}{RESET}")
-}
-fn dim(s: &str) -> String {
-    format!("{DIM}{s}{RESET}")
-}
-fn green(s: &str) -> String {
-    format!("{GREEN}{s}{RESET}")
-}
-fn red(s: &str) -> String {
-    format!("{RED}{s}{RESET}")
-}
-fn yellow(s: &str) -> String {
-    format!("{YELLOW}{s}{RESET}")
-}
-fn cyan(s: &str) -> String {
-    format!("{CYAN}{s}{RESET}")
-}
-fn bold(s: &str) -> String {
-    format!("{BOLD}{s}{RESET}")
-}
-
-fn status_badge(online: bool) -> String {
-    if online {
-        green("online").to_string()
-    } else {
-        red("offline").to_string()
-    }
-}
-
-fn pending_badge(pending: bool) -> String {
-    if pending {
-        yellow("PENDING").to_string()
-    } else {
-        dim("-").to_string()
-    }
-}
-
-fn visible_len(s: &str) -> usize {
-    // strip ANSI CSI sequences: \x1b[ ... m
-    let mut n = 0usize;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next(); // '['
-                // consume until 'm' or end
-                while let Some(x) = chars.next() {
-                    if x == 'm' {
-                        break;
-                    }
-                }
-                continue;
-            }
-        }
-        n += 1;
-    }
-    n
-}
-
-fn pad_cell(s: &str, width: usize) -> String {
-    let vis = visible_len(s);
-    if vis >= width {
-        s.to_string()
-    } else {
-        let mut out = String::with_capacity(s.len() + (width - vis));
-        out.push_str(s);
-        out.extend(std::iter::repeat(' ').take(width - vis));
-        out
-    }
-}
-
-fn row8(
-    c1: &str,
-    w1: usize,
-    c2: &str,
-    w2: usize,
-    c3: &str,
-    w3: usize,
-    c4: &str,
-    w4: usize,
-    c5: &str,
-    w5: usize,
-    c6: &str,
-    w6: usize,
-    c7: &str,
-    w7: usize,
-    c8: &str,
-    w8: usize,
-    c9: &str,
-) -> String {
-    format!(
-        "{} {} {} {} {} {} {} {} {}",
-        pad_cell(c1, w1),
-        pad_cell(c2, w2),
-        pad_cell(c3, w3),
-        pad_cell(c4, w4),
-        pad_cell(c5, w5),
-        pad_cell(c6, w6),
-        pad_cell(c7, w7),
-        pad_cell(c8, w8),
-        c9
-    )
-}
 
 pub fn print_devices_table(devices: &[PublicDevice], auth_requests: &[DeviceAuthRequest]) {
     if devices.is_empty() && auth_requests.is_empty() {
@@ -125,101 +16,179 @@ pub fn print_devices_table(devices: &[PublicDevice], auth_requests: &[DeviceAuth
         return;
     }
 
-    const WIDTH_ID: usize = 8;
-    const WIDTH_NAME: usize = 18;
-    const WIDTH_STATUS: usize = 8; // "ONLINE" fits; color doesn't break alignment now
-    const WIDTH_ARCH: usize = 6;
-    const WIDTH_OS: usize = 26;
-    const WIDTH_IP: usize = 39;
-    const WIDTH_LAST: usize = 12;
-    const WIDTH_PENDING: usize = 8;
+    let term_w = terminal_width().unwrap_or(96).max(60);
+    let opts = RenderOpts::default();
 
-    println!("{}", bold("Devices"));
-
-    // Header (dimmed, but still aligns because we pad by visible width)
-    println!(
-        "  {}",
-        row8(
-            &dim("ID"),
-            WIDTH_ID,
-            &dim("NAME"),
-            WIDTH_NAME,
-            &dim("STATUS"),
-            WIDTH_STATUS,
-            &dim("ARCH"),
-            WIDTH_ARCH,
-            &dim("OS"),
-            WIDTH_OS,
-            &dim("IP"),
-            WIDTH_IP,
-            &dim("LAST"),
-            WIDTH_LAST,
-            &dim("PENDING"),
-            WIDTH_PENDING,
-            &dim("REQUEST"),
-        )
+    let t_devices = Table::new(
+        term_w.saturating_sub(2),
+        1,
+        vec![
+            ColSpec {
+                title: "ID",
+                min: 6,
+                max: Some(8),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "NAME",
+                min: 10,
+                max: Some(18),
+                weight: 2,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "STATUS",
+                min: 6,
+                max: Some(8),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "ARCH",
+                min: 4,
+                max: Some(6),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "OS",
+                min: 12,
+                max: Some(26),
+                weight: 3,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "IP",
+                min: 10,
+                max: Some(39),
+                weight: 4,
+                align: Align::Left,
+                wrap: false,
+            },
+        ],
     );
 
-    for dev in devices {
-        let os = truncate_str(&dev.system_info.operating_system, WIDTH_OS - 1);
-        let ip = dev.system_info.public_ip_address.as_deref().unwrap_or("-");
-        let last_seen = format_relative_time(&dev.last_connection);
+    // Auth requests table (REQUEST column is important/copy-friendly)
+    let t_auth = Table::new(
+        term_w.saturating_sub(2),
+        1,
+        vec![
+            ColSpec {
+                title: "NAME",
+                min: 10,
+                max: Some(22),
+                weight: 3,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "STATUS",
+                min: 6,
+                max: Some(8),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "ARCH",
+                min: 4,
+                max: Some(6),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "OS",
+                min: 12,
+                max: Some(26),
+                weight: 3,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "IP",
+                min: 10,
+                max: Some(39),
+                weight: 4,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "REQUEST",
+                min: 8,
+                max: None,
+                weight: 2,
+                align: Align::Left,
+                wrap: false,
+            },
+        ],
+    );
 
-        println!(
-            "  {}",
-            row8(
-                &dev.short_id,
-                WIDTH_ID,
-                &dev.name,
-                WIDTH_NAME,
-                &status_badge(dev.online),
-                WIDTH_STATUS,
-                &dev.system_info.architecture,
-                WIDTH_ARCH,
-                &os,
-                WIDTH_OS,
-                ip,
-                WIDTH_IP,
-                &last_seen,
-                WIDTH_LAST,
-                &dim("-"),
-                WIDTH_PENDING,
-                &dim("-"),
-            )
-        );
+    let mut out = String::new();
+
+    // ---- AUTH REQUESTS (only if > 0, shown first) ----
+    if !auth_requests.is_empty() {
+        out.push_str(&format!("{}\n", bold("Auth requests")));
+        t_auth.header(&mut out, &opts);
+
+        for req in auth_requests {
+            let ip = req.device_info.public_ip_address.as_deref().unwrap_or("-");
+
+            out.push_str("  ");
+            t_auth.row(
+                &mut out,
+                &[
+                    &req.device_info.hostname,
+                    &pending_badge(true),
+                    &req.device_info.architecture,
+                    &req.device_info.operating_system,
+                    ip,
+                    &req.request_id,
+                ],
+                &opts,
+            );
+        }
+
+        out.push('\n');
     }
 
-    for req in auth_requests {
-        let name = truncate_str(&req.device_info.hostname, WIDTH_NAME - 1);
-        let os = truncate_str(&req.device_info.operating_system, WIDTH_OS - 1);
-        let ip = req.device_info.public_ip_address.as_deref().unwrap_or("-");
+    // ---- DEVICES ----
+    if !devices.is_empty() {
+        out.push_str(&format!("{}\n", bold("Devices")));
+        t_devices.header(&mut out, &opts);
 
-        println!(
-            "  {}",
-            row8(
-                &dim("-"),
-                WIDTH_ID,
-                &name,
-                WIDTH_NAME,
-                &cyan("AUTH"),
-                WIDTH_STATUS,
-                &req.device_info.architecture,
-                WIDTH_ARCH,
-                &os,
-                WIDTH_OS,
-                ip,
-                WIDTH_IP,
-                &dim("-"),
-                WIDTH_LAST,
-                &pending_badge(true),
-                WIDTH_PENDING,
-                &req.request_id, // copy-friendly
-            )
-        );
+        for dev in devices {
+            let os = dev.system_info.operating_system.as_str();
+            let ip = dev.system_info.public_ip_address.as_deref().unwrap_or("-");
+
+            t_devices.row(
+                &mut out,
+                &[
+                    &dev.short_id,
+                    &dev.name,
+                    &status_badge(dev.online),
+                    &dev.system_info.architecture,
+                    os,
+                    ip,
+                ],
+                &opts,
+            );
+        }
     }
+
+    print!("{out}");
 }
 
 pub fn print_device_status(name: &str, status: &DeviceStatus) {
+    let term_w = terminal_width().unwrap_or(96).max(60);
+    let opts = RenderOpts::default();
+
     println!("{} {}", "Device", bold(name));
 
     if status.observations.is_empty() && status.incidents.is_empty() {
@@ -228,35 +197,59 @@ pub fn print_device_status(name: &str, status: &DeviceStatus) {
     }
 
     if !status.observations.is_empty() {
-        println!("  {}", bold("Observations"));
+        println!("{}", bold("Observations"));
 
-        // column widths (match the “devices” vibe: simple rows, aligned)
-        const W_NAME: usize = 18;
-        const W_LIFE: usize = 12; // ALIVE/DEAD
-        const W_HEALTH: usize = 10; // HEALTHY/UNHEALTHY
-
-        println!(
-            "  {}",
-            row8(
-                &dim("NAME"),
-                W_NAME,
-                &dim("LIFELYNESS"),
-                W_LIFE,
-                &dim("HEALTH"),
-                W_HEALTH,
-                &dim("CRASHES"),
-                8,
-                &dim("UNHEALTHY CHECKS"),
-                18,
-                "",
-                0,
-                "",
-                0,
-                "",
-                0,
-                "" // tail
-            )
+        // Keep it compact; let NAME grow, numbers stay small.
+        let t = Table::new(
+            term_w.saturating_sub(2),
+            1,
+            vec![
+                ColSpec {
+                    title: "NAME",
+                    min: 10,
+                    max: Some(18),
+                    weight: 3,
+                    align: Align::Left,
+                    wrap: false,
+                },
+                ColSpec {
+                    title: "LIVELINESS",
+                    min: 9,
+                    max: Some(12),
+                    weight: 0,
+                    align: Align::Left,
+                    wrap: false,
+                },
+                ColSpec {
+                    title: "HEALTH",
+                    min: 7,
+                    max: Some(10),
+                    weight: 0,
+                    align: Align::Left,
+                    wrap: false,
+                },
+                ColSpec {
+                    title: "CRASHES",
+                    min: 7,
+                    max: Some(8),
+                    weight: 0,
+                    align: Align::Right,
+                    wrap: false,
+                },
+                ColSpec {
+                    title: "UNHEALTHY_CHECKS",
+                    min: 14,
+                    max: Some(18),
+                    weight: 0,
+                    align: Align::Right,
+                    wrap: false,
+                },
+            ],
         );
+
+        let mut out = String::new();
+        out.push_str("  ");
+        t.header(&mut out, &opts);
 
         for obs in &status.observations {
             let life = if obs.alive {
@@ -282,93 +275,171 @@ pub fn print_device_status(name: &str, status: &DeviceStatus) {
                 dim("0")
             };
 
-            println!(
-                "  {}",
-                format!(
-                    "{} {} {} {} {}",
-                    pad_cell(&obs.name, W_NAME),
-                    pad_cell(&life, W_LIFE),
-                    pad_cell(&health, W_HEALTH),
-                    pad_cell(&crashes, 8),
-                    pad_cell(&checks, 8),
-                )
+            out.push_str("  ");
+            t.row(
+                &mut out,
+                &[&obs.name, &life, &health, &crashes, &checks],
+                &opts,
             );
         }
+
+        print!("{out}");
     }
 
     if !status.incidents.is_empty() {
-        println!("  {}", bold("Incidents"));
+        println!("{}", bold("Incidents"));
 
-        const W_ID: usize = 18;
-        const W_START: usize = 20;
-
-        println!(
-            "  {}",
-            format!(
-                "{} {} {}",
-                pad_cell(&dim("ID"), W_ID),
-                pad_cell(&dim("START"), W_START),
-                dim("END"),
-            )
+        let t = Table::new(
+            term_w.saturating_sub(2),
+            1,
+            vec![
+                ColSpec {
+                    title: "ID",
+                    min: 10,
+                    max: Some(18),
+                    weight: 0,
+                    align: Align::Left,
+                    wrap: false,
+                },
+                ColSpec {
+                    title: "START",
+                    min: 16,
+                    max: Some(20),
+                    weight: 0,
+                    align: Align::Left,
+                    wrap: false,
+                },
+                ColSpec {
+                    title: "END",
+                    min: 16,
+                    max: None,
+                    weight: 2,
+                    align: Align::Left,
+                    wrap: false,
+                },
+            ],
         );
 
+        let mut out = String::new();
+        out.push_str("  ");
+        t.header(&mut out, &opts);
+
         for inc in &status.incidents {
-            println!(
-                "  {} {} {}",
-                pad_cell(&red(&inc.id), W_ID),
-                pad_cell(&dim(&inc.start_time), W_START),
-                dim(&inc.end_time),
+            out.push_str("  ");
+            t.row(
+                &mut out,
+                &[&red(&inc.id), &dim(&inc.start_time), &dim(&inc.end_time)],
+                &opts,
             );
         }
-    }
-}
 
-/// Truncate a string to max length, adding "..." if truncated
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() > max {
-        format!("{}...", s.chars().take(max - 3).collect::<String>())
+        print!("{out}");
     } else {
-        s.to_string()
+        println!("{}", bold("No Incidents"));
     }
 }
 
-/// Format an ISO timestamp as relative time (e.g., "2 min ago", "3 days ago")
-fn format_relative_time(iso_time: &str) -> String {
-    let Ok(time) = iso_time.parse::<DateTime<Utc>>() else {
-        return iso_time.to_string();
+pub fn print_deployment_reports(reports: &[AuditLog], show_details: bool) {
+    if reports.is_empty() {
+        println!("{}", dim("No deployment reports found"));
+        return;
+    }
+
+    let term_w = terminal_width().unwrap_or(96);
+    let opts = RenderOpts::default();
+
+    fn action_badge(action: &str) -> String {
+        let a = action.to_ascii_lowercase();
+        if a.contains("create") || a.contains("add") || a.contains("provision") {
+            green(action)
+        } else if a.contains("delete") || a.contains("remove") || a.contains("revoke") {
+            red(action)
+        } else if a.contains("update") || a.contains("edit") || a.contains("patch") {
+            yellow(action)
+        } else {
+            cyan(action)
+        }
+    }
+
+    println!("{}", bold("Deployment reports"));
+
+    let t = Table::new(
+        term_w.saturating_sub(2),
+        1,
+        vec![
+            ColSpec {
+                title: "TIME",
+                min: 8,
+                max: Some(12),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "DEVICE",
+                min: 8,
+                max: Some(16),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "USER",
+                min: 8,
+                max: Some(35),
+                weight: 3,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "ACTION",
+                min: 14,
+                max: Some(200),
+                weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+        ],
+    );
+
+    let mut out = String::new();
+    out.push_str("  ");
+    t.header(&mut out, &opts);
+
+    // Indent details by the visual width of column 0 (TIME), like your log-tail logic.
+    // This assumes Table has the same helper you used: get_column_width_as_whitespace(col_idx).
+    let details_ws = if show_details {
+        format!("{}{}", t.get_column_width_as_whitespace(0), " ")
+    } else {
+        String::new()
     };
 
-    let now = Utc::now();
-    let duration = now.signed_duration_since(time);
+    for r in reports {
+        let time = format_relative_time(&r.timestamp);
+        let user = format!("{} <{}>", r.user_name, r.user_email);
+        let action = action_badge(&r.action);
+        let device = match &r.device_id {
+            Some(id) => dim(&try_get_name_from_long_id(id).unwrap_or(id.to_string())),
+            None => dim("-").to_string(),
+        };
 
-    let secs = duration.num_seconds();
-    if secs < 0 {
-        return "just now".to_string();
-    }
-    if secs < 60 {
-        return format!("{} sec ago", secs);
-    }
+        out.push_str("  ");
 
-    let mins = duration.num_minutes();
-    if mins < 60 {
-        return format!("{} min ago", mins);
-    }
-
-    let hours = duration.num_hours();
-    if hours < 24 {
-        return format!("{} hour{} ago", hours, if hours == 1 { "" } else { "s" });
-    }
-
-    let days = duration.num_days();
-    if days < 30 {
-        return format!("{} day{} ago", days, if days == 1 { "" } else { "s" });
-    }
-
-    let months = days / 30;
-    if months < 12 {
-        return format!("{} month{} ago", months, if months == 1 { "" } else { "s" });
+        t.row(&mut out, &[&time, &device, &user, &action], &opts);
+        if show_details {
+            let d = r.details.trim();
+            if !d.is_empty() && d != "-" {
+                // Print details below the row, dim, and align under TIME column width.
+                // Multi-line details keep alignment (same trick as log tail).
+                out.push_str(&format!(
+                    "{}{}",
+                    details_ws,
+                    dim(&d.replace("\n", &format!("\n{}", details_ws)))
+                ));
+                out.push('\n');
+            }
+        }
     }
 
-    let years = days / 365;
-    format!("{} year{} ago", years, if years == 1 { "" } else { "s" })
+    print!("{out}");
 }

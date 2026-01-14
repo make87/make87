@@ -1,9 +1,9 @@
-use std::{collections::BTreeMap, hash::Hash};
+use std::{fmt::Display, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{config::DeviceClientConfig, deploy_spec::RunState};
+use crate::config::DeviceClientConfig;
 
 /// Compute short device ID (first 6 chars of SHA256 hash)
 /// Used for tunnel routing - must be consistent across server and client
@@ -21,13 +21,21 @@ pub struct PublicDevice {
     pub short_id: String,
     pub updated_at: String,
     pub created_at: String,
-    pub last_connection: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_connection: Option<String>,
     pub online: bool,
     pub version: String,
     pub target_version: String,
     #[serde(default)]
     pub config: DeviceClientConfig,
     pub system_info: DeviceSystemInfo,
+}
+
+impl Display for PublicDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let json = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", json)
+    }
 }
 
 fn default_architecture() -> String {
@@ -105,7 +113,9 @@ pub struct DeviceStatus {
 #[derive(Deserialize, Serialize, Default)]
 pub struct AuditLog {
     pub user_name: String,
+    pub user_email: String,
     pub timestamp: String,
     pub action: String,
     pub details: String,
+    pub device_id: Option<String>,
 }

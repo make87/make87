@@ -1,5 +1,3 @@
-// === Core modules ===
-pub mod app;
 pub mod auth;
 pub mod config;
 pub mod device;
@@ -8,7 +6,6 @@ pub mod devices;
 pub mod streams;
 
 pub mod server;
-pub mod stack;
 pub mod update;
 pub mod util;
 

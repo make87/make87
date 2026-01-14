@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -37,6 +38,13 @@ pub struct UpdateDeviceBody {
     pub allowed_scopes: Option<Vec<String>>,
 }
 
+impl Display for UpdateDeviceBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let json = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", json)
+    }
+}
+
 impl UpdateDeviceBody {
     pub fn to_update_doc(&self) -> Document {
         let mut update_fields = doc! {};
@@ -69,7 +77,6 @@ impl UpdateDeviceBody {
         }
 
         // Always set these system timestamps
-        update_fields.insert("last_connection", DateTime::now());
         update_fields.insert("updated_at", DateTime::now());
 
         doc! { "$set": update_fields }
@@ -95,7 +102,6 @@ pub struct DeviceDoc {
     pub name: String,
     pub updated_at: DateTime,
     pub created_at: DateTime,
-    pub last_connection: DateTime,
     #[serde(default = "String::new")]
     pub version: String,
     #[serde(default = "default_stable_version")]
@@ -135,7 +141,6 @@ impl DeviceDoc {
             name: create_body.name,
             updated_at: now,
             created_at: now,
-            last_connection: now,
             version: "".to_string(),
             target_version: create_body
                 .target_version
@@ -214,7 +219,6 @@ impl DeviceDoc {
             update_fields.insert("updated_at", DateTime::now());
         }
 
-        update_fields.insert("last_connection", DateTime::now());
         let _ = db
             .devices()
             .update_one(
@@ -290,7 +294,7 @@ impl DeviceDoc {
         Ok(resp)
     }
 
-    pub async fn get_status(&self, db: &Arc<Mongo>, since: u32) -> ServerResult<DeviceStatus> {
+    pub async fn get_status(&self, db: &Arc<Mongo>) -> ServerResult<DeviceStatus> {
         let active_revision =
             DeployRevisionDoc::get_active_device_deployment(db, self.id.clone().unwrap()).await?;
         let observations = match active_revision {
@@ -299,7 +303,7 @@ impl DeviceDoc {
                     db,
                     &revision.revision.id.unwrap(),
                     &self.id.clone().unwrap(),
-                    since,
+                    // since,
                 )
                 .await?;
                 observations
@@ -316,21 +320,14 @@ impl DeviceDoc {
 
 impl Into<PublicDevice> for DeviceDoc {
     fn into(self) -> PublicDevice {
-        let now_ms = DateTime::now().timestamp_millis();
-        let last_ms = self.last_connection.timestamp_millis();
-        let heartbeat_secs = self.config.heartbeat_interval_secs.clone().unwrap_or(30);
-        // convert u32 to i64
-        let heartbeat_secs = heartbeat_secs as i64;
-
-        let online = now_ms - last_ms < 3 * heartbeat_secs * 1000;
         PublicDevice {
             id: self.id.unwrap().to_string(),
             name: self.name.clone(),
             short_id: self.short_id.clone(),
             updated_at: self.updated_at.try_to_rfc3339_string().unwrap(),
             created_at: self.created_at.try_to_rfc3339_string().unwrap(),
-            last_connection: self.last_connection.try_to_rfc3339_string().unwrap(),
-            online,
+            last_connection: Some("".to_string()),
+            online: false,
             version: self.version.clone(),
             target_version: self.target_version.clone(),
             config: self.config.clone(),

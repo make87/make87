@@ -243,11 +243,23 @@ pub enum DeviceCommand {
 
     Status,
 
+    Audit {
+        // rfc date like 2026-01-31 or 2026-01-31T13:00:00
+        #[arg(long)]
+        until: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, default_value = "100")]
+        max: u32,
+        #[arg(long, default_value = "false")]
+        details: bool,
+    },
+
     /// Add a run spec to a deployment (defaults to active deployment)
     Deploy(DeployArgs),
 
     /// Remove a run spec from a deployment (defaults to active deployment)
-    Undeploy(DeployArgs),
+    Undeploy(UndeployArgs),
 
     /// Manage deployments on the device
     #[command(subcommand)]
@@ -269,7 +281,17 @@ pub struct DeployArgs {
 
     /// Add to a specific deployment (otherwise active deployment)
     #[arg(long)]
-    pub deployment: Option<String>,
+    pub deployment_id: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct UndeployArgs {
+    /// File path or run spec name
+    pub job_id: String,
+
+    /// Add to a specific deployment (otherwise active deployment)
+    #[arg(long)]
+    pub deployment_id: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -286,7 +308,9 @@ pub enum DeploymentCommand {
 
     /// Show details for a deployment (includes run specs)
     Show {
-        deployment_id: String,
+        /// specifiv deplyoment to show. Defautls to the active deployment
+        #[arg(long)]
+        deployment_id: Option<String>,
 
         /// Output YAML (optional)
         #[arg(long)]
@@ -307,6 +331,16 @@ pub enum DeploymentCommand {
 
     /// Set the active deployment
     Activate { deployment_id: String },
+    /// Set the active deployment
+    Status {
+        /// specifiv deplyoment to show. Defautls to the active deployment
+        #[arg(long)]
+        deployment_id: Option<String>,
+
+        /// Show logs of the steps
+        #[arg(long)]
+        logs: bool,
+    },
 
     /// Clone an existing deployment into a new one
     Clone {
@@ -741,8 +775,21 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         }
 
         DeviceCommand::Status => {
-            let status = devices::get_device_status(&device, None).await?;
+            let status = devices::get_device_status(&device).await?;
             tui::devices::print_device_status(&device, &status);
+            Ok(())
+        }
+
+        DeviceCommand::Audit {
+            until,
+            since,
+            max,
+            details,
+        } => {
+            let logs = devices::get_audit_logs(&device, until, since, max).await?;
+
+            tracing::info!("[done] Received audit logs");
+            tui::devices::print_deployment_reports(&logs, details);
             Ok(())
         }
 
@@ -752,7 +799,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
                 args.file,
                 args.r#type,
                 args.name,
-                args.deployment,
+                args.deployment_id,
             )
             .await?;
 
@@ -761,16 +808,10 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         }
 
         DeviceCommand::Undeploy(args) => {
-            let _ = device::deploy::undeploy_file(
-                &device,
-                args.file,
-                args.r#type,
-                args.name,
-                args.deployment,
-            )
-            .await?;
+            let _ = device::deploy::undeploy_file(&device, args.job_id.clone(), args.deployment_id)
+                .await?;
 
-            tracing::info!("[done] Added job spec to deployment");
+            tracing::info!("[done] Removed {} from deployment", args.job_id);
             Ok(())
         }
 
@@ -793,10 +834,50 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
                 Ok(())
             }
 
+            DeploymentCommand::Status {
+                deployment_id,
+                logs,
+            } => {
+                let deployment_id = match deployment_id {
+                    Some(d) => d,
+                    None => match device::deploy::get_active_deployment_id(&device).await? {
+                        Some(d) => d,
+                        None => {
+                            tracing::error!(
+                                "No active deployment set for device {}. You either need to activate one or specify an --deployment-id",
+                                device
+                            );
+                            return Ok(());
+                        }
+                    },
+                };
+                let reports =
+                    device::deploy::get_deployment_reports(&device, &deployment_id).await?;
+
+                tracing::info!("[done] Received deployment reports");
+                let mut config = tui::helper::RenderOpts::default();
+                config.show_logs_inline = logs;
+                tui::deploy::print_deployment_reports(&reports, &config);
+                Ok(())
+            }
+
             DeploymentCommand::Show {
                 deployment_id,
                 yaml,
             } => {
+                let deployment_id = match deployment_id {
+                    Some(d) => d,
+                    None => match device::deploy::get_active_deployment_id(&device).await? {
+                        Some(d) => d,
+                        None => {
+                            tracing::error!(
+                                "No active deployment set for device {}. You either need to activate one or specify an --deployment-id",
+                                device
+                            );
+                            return Ok(());
+                        }
+                    },
+                };
                 let deployment = device::deploy::get_deployment(&device, deployment_id).await?;
                 tracing::info!("[done] Loaded deployment");
                 match yaml {
@@ -832,7 +913,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             }
 
             DeploymentCommand::Active => {
-                let deployment_id = device::deploy::get_active_deployment(&device).await?;
+                let deployment_id = device::deploy::get_active_deployment_id(&device).await?;
                 match deployment_id {
                     Some(id) => tracing::info!("[done] Active deployment ID: {}", id),
                     None => tracing::info!("[done] No active deployment"),

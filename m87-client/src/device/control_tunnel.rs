@@ -11,7 +11,7 @@ use tracing::error;
 use tracing::{debug, warn};
 
 #[cfg(feature = "agent")]
-use crate::{auth::AuthManager, config::Config, device::deployment_manager::UnitManager};
+use crate::{auth::AuthManager, config::Config, device::deployment_manager::DeploymentManager};
 
 #[cfg(feature = "agent")]
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
@@ -26,7 +26,7 @@ pub struct HeartbeatState {
 
 // Agent-specific: Maintain persistent control tunnel connection
 #[cfg(feature = "agent")]
-pub async fn connect_control_tunnel(unit_manager: Arc<UnitManager>) -> Result<()> {
+pub async fn connect_control_tunnel(unit_manager: Arc<DeploymentManager>) -> Result<()> {
     use std::sync::Arc;
 
     use crate::streams::quic::get_quic_connection;
@@ -75,12 +75,14 @@ pub async fn connect_control_tunnel(unit_manager: Arc<UnitManager>) -> Result<()
     let manager_clone = unit_manager.clone();
     let _receiver = tokio::spawn({
         let state = state.clone();
+        let update_mutex = Arc::new(tokio::sync::Mutex::new(()));
         async move {
             loop {
                 tokio::select! {
                     _ = shutdown.changed() => break,
 
                     msg = read_msg::<HeartbeatResponse>(&mut recv) => {
+                        let _ = update_mutex.lock().await;
                         let resp = msg?;
                         tracing::info!("Received heartbeat response");
 

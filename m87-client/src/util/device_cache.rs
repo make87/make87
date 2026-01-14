@@ -126,3 +126,12 @@ fn write_atomic(path: &PathBuf, data: &[u8]) -> Result<()> {
     fs::rename(tmp, path)?;
     Ok(())
 }
+
+pub fn try_get_name_from_long_id(id: &str) -> Result<String> {
+    let cache = load_cache()?;
+    let name = cache
+        .values()
+        .find_map(|list| list.iter().find(|d| d.id == id).map(|d| d.name.clone()));
+
+    name.ok_or_else(|| anyhow!("Device with ID {} not found", id))
+}

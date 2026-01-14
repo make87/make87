@@ -31,6 +31,7 @@ tokio-rustls.workspace = true
 socket2.workspace = true
 
 # Server-specific dependencies
+# add feature "chrono-0_4"
 mongodb = "3"
 rcgen = "0.14.5"
 arc-swap = "=1.7.1"

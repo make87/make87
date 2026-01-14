@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use m87_shared::deploy_spec::{CommandSpec, LogSpec};
+use m87_shared::deploy_spec::{CommandSpec, LogSpec, ObserveHooks};
 use std::{
     collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
@@ -28,7 +28,7 @@ pub struct LogManager {
 enum LogCmd {
     Snapshot {
         run_id: String,
-        spec: LogSpec,
+        record: CommandSpec,
         env: BTreeMap<String, String>,
         workdir: PathBuf,
         max_bytes: usize,
@@ -65,7 +65,7 @@ impl LogManager {
                 match rx.recv().await {
                     Some(LogCmd::Snapshot {
                         run_id,
-                        spec,
+                        record,
                         env,
                         workdir,
                         max_bytes,
@@ -74,7 +74,7 @@ impl LogManager {
                         resp,
                     }) => {
                         let r = snapshot_logs(
-                            &run_id, &spec.tail, &env, &workdir, max_bytes, max_lines, t,
+                            &run_id, &record, &env, &workdir, max_bytes, max_lines, t,
                         )
                         .await;
                         let _ = resp.send(r).await;
@@ -165,24 +165,31 @@ impl LogManager {
     pub async fn snapshot(
         &self,
         run_id: String,
-        spec: LogSpec,
+        observe: &ObserveHooks,
         env: BTreeMap<String, String>,
         workdir: PathBuf,
         max_bytes: usize,
         max_lines: usize,
-        timeout_dur: Duration,
     ) -> Result<Vec<String>> {
         let (resp_tx, mut resp_rx) = mpsc::channel::<Result<Vec<String>>>(1);
+        let record = match &observe.record {
+            Some(record) => record.clone(),
+            None => return Err(anyhow!("no record provided")),
+        };
+
         let _ = self
             .tx
             .send(LogCmd::Snapshot {
                 run_id,
-                spec,
+                record,
                 env,
                 workdir,
                 max_bytes,
                 max_lines,
-                timeout: timeout_dur,
+                timeout: observe
+                    .record_timeout
+                    .clone()
+                    .unwrap_or(Duration::from_secs(5)),
                 resp: resp_tx,
             })
             .await;
