@@ -63,4 +63,4 @@ m87 rpi exec -- docker ps
 ## See Also
 
 - [exec/](../exec/) - Run single commands
-- [stats/](../stats/) - System metrics dashboard
+- [metrics/](../metrics/) - System metrics dashboard

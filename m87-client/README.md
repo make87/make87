@@ -46,7 +46,7 @@ m87 <device> exec -- <cmd>     # run command
 m87 <device> forward <ports>   # port forwarding (see below)
 m87 <device> docker <args>     # docker passthrough
 m87 <device> logs              # logs from the runtime and observed containers
-m87 <device> stats             # system metrics
+m87 <device> metrics           # system metrics
 m87 <device> serial <name>     # serial mount forwarding
 m87 <device> audit --details   # audit logs on who interacted with the device
 ```

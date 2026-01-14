@@ -25,7 +25,7 @@ Stream m87 runtime logs from remote devices.
 ### [shell/](./shell/)
 Interactive shell sessions on remote devices.
 
-### [stats/](./stats/)
+### [metrics/](./metrics/)
 Real-time system metrics dashboard.
 
 ### [forward/](./forward/)

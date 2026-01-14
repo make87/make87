@@ -85,5 +85,5 @@ m87 rpi exec -- docker logs -f mycontainer
 
 ## See Also
 
-- [stats/](../stats/) - System metrics dashboard
+- [metrics/](../metrics/) - System metrics dashboard
 - [exec/](../exec/) - Run commands for system logs
