@@ -1,6 +1,9 @@
+use std::fmt::Display;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-use m87_shared::services::ServiceInfo;
+use m87_shared::deploy_spec::{DeployReportKind, DeploymentRevision, build_instruction_hash};
+use m87_shared::device::DeviceStatus;
 use mongodb::bson::{DateTime, Document, doc, oid::ObjectId};
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +13,9 @@ pub use m87_shared::config::DeviceClientConfig;
 pub use m87_shared::device::{DeviceSystemInfo, PublicDevice, short_device_id};
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
 
+use crate::config::AppConfig;
+use crate::models::audit_logs::AuditLogDoc;
+use crate::models::deploy_spec::{CreateDeployReportBody, DeployReportDoc, DeployRevisionDoc};
 use crate::{
     auth::{access_control::AccessControlled, claims::Claims},
     db::Mongo,
@@ -31,6 +37,13 @@ pub struct UpdateDeviceBody {
     pub owner_scope: Option<String>,
     #[serde(default)]
     pub allowed_scopes: Option<Vec<String>>,
+}
+
+impl Display for UpdateDeviceBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let json = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", json)
+    }
 }
 
 impl UpdateDeviceBody {
@@ -65,7 +78,6 @@ impl UpdateDeviceBody {
         }
 
         // Always set these system timestamps
-        update_fields.insert("last_connection", DateTime::now());
         update_fields.insert("updated_at", DateTime::now());
 
         doc! { "$set": update_fields }
@@ -91,7 +103,6 @@ pub struct DeviceDoc {
     pub name: String,
     pub updated_at: DateTime,
     pub created_at: DateTime,
-    pub last_connection: DateTime,
     #[serde(default = "String::new")]
     pub version: String,
     #[serde(default = "default_stable_version")]
@@ -101,10 +112,11 @@ pub struct DeviceDoc {
     pub owner_scope: String,
     pub allowed_scopes: Vec<String>,
     pub system_info: DeviceSystemInfo,
-    pub instruction_hash: i64,
     pub api_key_id: ObjectId,
     #[serde(default)]
-    pub last_instruction_hash: String,
+    pub last_config_hash: String,
+    #[serde(default)]
+    pub last_deployment_hash: String,
 }
 
 impl DeviceDoc {
@@ -130,7 +142,6 @@ impl DeviceDoc {
             name: create_body.name,
             updated_at: now,
             created_at: now,
-            last_connection: now,
             version: "".to_string(),
             target_version: create_body
                 .target_version
@@ -139,11 +150,25 @@ impl DeviceDoc {
             owner_scope: create_body.owner_scope,
             allowed_scopes,
             system_info: create_body.system_info,
-            instruction_hash: 0,
             api_key_id: create_body.api_key_id,
-            last_instruction_hash: "".to_string(),
+            last_config_hash: "".to_string(),
+            last_deployment_hash: "".to_string(),
         };
         let _ = db.devices().insert_one(node.clone()).await?;
+        Ok(())
+    }
+
+    pub async fn invalidate_deployment_hash(
+        db: &Arc<Mongo>,
+        device_oid: &ObjectId,
+    ) -> ServerResult<()> {
+        let _ = db
+            .devices()
+            .update_one(
+                doc! { "_id": device_oid },
+                doc! { "$set": { "last_deployment_hash": "" } },
+            )
+            .await?;
         Ok(())
     }
 
@@ -178,9 +203,10 @@ impl DeviceDoc {
 
     pub async fn handle_heartbeat(
         &self,
-        _claims: Claims,
+        claims: Claims,
         db: &Arc<Mongo>,
         payload: HeartbeatRequest,
+        config: &Arc<AppConfig>,
     ) -> ServerResult<HeartbeatResponse> {
         let mut update_fields = doc! {};
         if let Some(sys_info) = payload.system_info {
@@ -194,12 +220,11 @@ impl DeviceDoc {
             update_fields.insert("updated_at", DateTime::now());
         }
 
-        update_fields.insert("last_connection", DateTime::now());
         let _ = db
             .devices()
             .update_one(
                 doc! {
-                    "device_id": self.id.unwrap()
+                    "_id": &self.id.unwrap()
                 },
                 doc! {
                     "$set": update_fields
@@ -207,72 +232,144 @@ impl DeviceDoc {
             )
             .await;
 
-        if let Some(services) = payload.services {
-            let _ = self.create_or_update_services(db, services).await;
-        }
-        // TODO: Store or log the metrics for monitoring/alerting
+        if let Some(deploy_report) = payload.deploy_report {
+            let body = CreateDeployReportBody {
+                device_id: self.id.clone().unwrap(),
+                revision_id: deploy_report.get_revision_id().to_string(),
+                kind: deploy_report.clone(),
+                expires_at: Some(DateTime::from_system_time(
+                    SystemTime::now()
+                        + Duration::from_hours(24 * config.report_retention_days as u64),
+                )),
+            };
+            let res = DeployReportDoc::create_or_update(db, body).await;
+            if let Err(err) = res {
+                tracing::error!("Failed to create deploy report: {}", err);
+            }
 
-        if payload.last_instruction_hash == self.last_instruction_hash {
+            if let DeployReportKind::RollbackReport(rollback) = deploy_report {
+                // change active deplotment to rollback.new_revision_id
+                let device_oid = self.id.clone().unwrap();
+                let out = DeployRevisionDoc::get_active_device_deployment(&db, device_oid.clone())
+                    .await?;
+
+                if let Some(new_id) = &rollback.new_revision_id {
+                    let _ = db
+                        .deploy_revisions()
+                        .update_one(
+                            doc! { "revision.id": new_id, "device_id": &device_oid },
+                            doc! { "$set": { "active": true } },
+                        )
+                        .await?;
+                }
+
+                match out {
+                    Some(doc) => {
+                        let filter = doc! { "revision.id": &doc.id, "device_id": &device_oid };
+                        let update_doc = doc! { "active": false };
+                        let _ = db.deploy_revisions().update_one(filter, update_doc).await?;
+                    }
+                    None => {}
+                };
+
+                let _ = AuditLogDoc::add(
+                    &db,
+                    &claims,
+                    &config,
+                    &format!(
+                        "Rolled back deployment to {} for device {}",
+                        &rollback.new_revision_id.unwrap_or("None".to_string()),
+                        &device_oid
+                    ),
+                    "",
+                    Some(device_oid.clone()),
+                )
+                .await;
+            }
+        }
+
+        let target_hash =
+            build_instruction_hash(&self.last_deployment_hash, &self.last_config_hash);
+        if payload.last_instruction_hash == target_hash {
             return Ok(HeartbeatResponse {
                 up_to_date: true,
                 config: None,
-                instruction_hash: self.last_instruction_hash.clone(),
+                instruction_hash: target_hash.clone(),
+                target_revision: None,
             });
         }
+
+        let out = DeployRevisionDoc::get_active_device_deployment(&db, self.id.unwrap()).await;
+        let target_revision = match out {
+            Ok(Some(revision)) => Some(revision.revision),
+            Ok(None) => Some(DeploymentRevision::empty()),
+            _ => None,
+        };
+
+        let new_deployment_hash = match &target_revision {
+            Some(revision) => revision.get_hash(),
+            None => "".to_string(),
+        };
+        let config_hash = self.config.get_hash().to_string();
+        // update last_deployment_hash in database
+        let _ = db
+            .devices()
+            .update_one(
+                doc! {
+                    "_id": &self.id.unwrap()
+                },
+                doc! {
+                    "$set": doc! {
+                        "last_deployment_hash": &new_deployment_hash,
+                        "last_config_hash": &config_hash,
+                    }
+                },
+            )
+            .await;
 
         let resp = HeartbeatResponse {
             up_to_date: false,
             config: Some(self.config.clone()),
-            instruction_hash: self.last_instruction_hash.clone(),
+            instruction_hash: build_instruction_hash(&new_deployment_hash, &config_hash),
+            target_revision,
         };
         Ok(resp)
     }
 
-    pub async fn get_services(&self, db: &Arc<Mongo>) -> ServerResult<Vec<ServiceInfo>> {
-        let services_doc = db
-            .services()
-            .find_one(doc! {"device_id": self.id.unwrap()})
-            .await?;
-        let Some(services_doc) = services_doc else {
-            return Ok(vec![]);
+    pub async fn get_status(&self, db: &Arc<Mongo>) -> ServerResult<DeviceStatus> {
+        let active_revision =
+            DeployRevisionDoc::get_active_device_deployment(db, self.id.clone().unwrap()).await?;
+        let observations = match active_revision {
+            Some(revision) => {
+                let observations = DeployReportDoc::get_device_observations_since(
+                    db,
+                    &revision.revision.id.unwrap(),
+                    &self.id.clone().unwrap(),
+                    // since,
+                )
+                .await?;
+                observations
+            }
+            None => vec![],
         };
-        let services = services_doc.services;
-        Ok(services)
-    }
-
-    pub async fn create_or_update_services(
-        &self,
-        db: &Arc<Mongo>,
-        services: Vec<ServiceInfo>,
-    ) -> ServerResult<()> {
-        let _ = db
-            .services()
-            .update_one(
-                doc! {"device_id": self.id.unwrap()},
-                doc! {"$set": {"services": mongodb::bson::to_bson(&services).unwrap()}},
-            )
-            .await?;
-        Ok(())
+        let status = DeviceStatus {
+            incidents: vec![],
+            observations,
+        };
+        Ok(status)
     }
 }
 
 impl Into<PublicDevice> for DeviceDoc {
     fn into(self) -> PublicDevice {
-        let now_ms = DateTime::now().timestamp_millis();
-        let last_ms = self.last_connection.timestamp_millis();
-        let heartbeat_secs = self.config.heartbeat_interval_secs.clone().unwrap_or(30);
-        // convert u32 to i64
-        let heartbeat_secs = heartbeat_secs as i64;
-
-        let online = now_ms - last_ms < 3 * heartbeat_secs * 1000;
         PublicDevice {
             id: self.id.unwrap().to_string(),
             name: self.name.clone(),
             short_id: self.short_id.clone(),
             updated_at: self.updated_at.try_to_rfc3339_string().unwrap(),
             created_at: self.created_at.try_to_rfc3339_string().unwrap(),
-            last_connection: self.last_connection.try_to_rfc3339_string().unwrap(),
-            online,
+            last_connection: Some("".to_string()),
+            online: false,
             version: self.version.clone(),
             target_version: self.target_version.clone(),
             config: self.config.clone(),
@@ -293,29 +390,5 @@ impl AccessControlled for DeviceDoc {
     }
     fn allowed_scopes_field() -> Option<&'static str> {
         Some("allowed_scopes")
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeviceServicesDoc {
-    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
-    pub id: Option<ObjectId>,
-    pub device_id: String,
-    pub services: Vec<ServiceInfo>,
-}
-
-impl DeviceServicesDoc {
-    pub async fn create_from(
-        db: &Arc<Mongo>,
-        device_id: String,
-        services: Vec<ServiceInfo>,
-    ) -> ServerResult<Self> {
-        let doc = DeviceServicesDoc {
-            id: None,
-            device_id,
-            services,
-        };
-        let _ = db.services().insert_one(doc.clone()).await?;
-        Ok(doc)
     }
 }

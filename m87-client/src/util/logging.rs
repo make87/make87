@@ -172,6 +172,14 @@ pub fn get_log_rx() -> Option<broadcast::Receiver<UiEvent>> {
     LOG_TX.get().map(|tx| tx.subscribe())
 }
 
+pub fn send_log_event(event: UiEvent) {
+    if let Some(tx) = LOG_TX.get() {
+        if let Err(err) = tx.send(event) {
+            eprintln!("Failed to send log event: {}", err);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

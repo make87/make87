@@ -40,6 +40,7 @@ m87 <device> forward 8080      # forward port 8080
 ### Remote Device Access
 
 ```
+m87 <device> status            # status of the device (crashes, health and incidents)
 m87 <device> shell             # interactive shell
 m87 <device> exec -- <cmd>     # run command
 m87 <device> forward <ports>   # port forwarding (see below)
@@ -47,15 +48,22 @@ m87 <device> docker <args>     # docker passthrough
 m87 <device> logs              # logs from the runtime and observed containers
 m87 <device> stats             # system metrics
 m87 <device> serial <name>     # serial mount forwarding
+m87 <device> audit --details   # audit logs on who interacted with the device
 ```
 
-### Remote Device Logs
+### Async Deployment
+
+In case your devices are not always online, you can register jobs
+to be executed when the device comes online.
+With this you can deploy arbitrary runtimes like docker systemd servers etc
+or observe services and get notified upon events.
 
 ```
-m87 <device> observe docker <container_name>             # make the runtime observe the container logs
-m87 <device> logs                                        # logs will now also show <container_name>
-m87 <device> observe docker <container_name> -r          # remove the container from the list of observed containers
-
+m87 <device> deploy ./my-compose.yml             # register a docker compsoe file to be run and observed (Auto converted by our cli)
+m87 <device> undeploy my-compose                 # remove the compose spec fomr the current deployment
+m87 <device> deploy ./custom_run_spec.yml        # register a custom run spec. See docs for schema
+m87 <device> deployment status --logs            # get the status and logs of the currently active deployment
+m87 <device> deployment show --yaml              # show the yaml spec of the currently active deployment
 ```
 
 ### File Transfer

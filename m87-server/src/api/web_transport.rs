@@ -19,7 +19,7 @@ use crate::{
         client_connection::{ClientConn, WebConn},
     },
     auth::claims::Claims,
-    models::device::DeviceDoc,
+    models::{audit_logs::AuditLogDoc, device::DeviceDoc},
     response::{ServerError, ServerResult},
     util::app_state::AppState,
 };
@@ -195,14 +195,53 @@ async fn handle_webtransport_forward(
         .map_err(|_| ServerError::bad_request("token not valid UTF-8"))?;
     let claims = Claims::from_bearer_or_key(&token, &state.db, &state.config).await?;
 
-    claims
+    let res = claims
         .find_one_with_scope_and_role::<DeviceDoc>(
             &state.db.devices(),
             doc! { "short_id": &device_id },
             Role::Editor,
         )
-        .await?
-        .ok_or_else(|| ServerError::not_found("device not found"))?;
+        .await;
+
+    match res {
+        Ok(Some(device)) => {
+            let _ = AuditLogDoc::add(
+                &state.db,
+                &claims,
+                &state.config,
+                "Connected to device",
+                "",
+                device.id.clone(),
+            )
+            .await;
+        }
+        Ok(None) => {
+            let _ = AuditLogDoc::add(
+                &state.db,
+                &claims,
+                &state.config,
+                &format!("Tried connecting to invalid device {}", &device_id),
+                "device not found",
+                None,
+            )
+            .await;
+            error!(%device_id, "device not found");
+            return Err(ServerError::not_found("Device not found"));
+        }
+        Err(e) => {
+            error!(%device_id, %e, "error finding device");
+            let _ = AuditLogDoc::add(
+                &state.db,
+                &claims,
+                &state.config,
+                &format!("Error on accessing device {}", &device_id),
+                &format!("{:?}", &e),
+                None,
+            )
+            .await;
+            return Err(ServerError::not_found("Device not found"));
+        }
+    };
 
     if !state.relay.has_tunnel(&device_id).await {
         return Err(ServerError::not_found("device tunnel not connected"));

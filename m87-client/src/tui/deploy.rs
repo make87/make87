@@ -1,0 +1,438 @@
+use m87_shared::deploy_spec::{
+    DeploymentRevision, DeploymentStatusSnapshot, Outcome, RunStatus, StepState,
+};
+
+use crate::tui::helper;
+
+pub fn print_revision_list_header() {
+    println!("{:<36} {:>4} {:>8}", "REVISION", "JOBS", "ROLLBACK");
+}
+
+pub fn print_revision_short(rev: &DeploymentRevision) {
+    println!(
+        "{:<36} {:>4} {:>8}",
+        rev.id.as_deref().unwrap_or("<none>"),
+        rev.jobs.len(),
+        if rev.rollback.is_some() { "yes" } else { "no" }
+    );
+}
+
+pub fn print_revision_list_short(revs: &[DeploymentRevision]) {
+    print_revision_list_header();
+    for rev in revs {
+        print_revision_short(rev);
+    }
+}
+
+pub fn print_revision_verbose(rev: &DeploymentRevision) {
+    match rev.to_yaml() {
+        Ok(yaml) => print!("{yaml}"),
+        Err(e) => eprintln!("failed to serialize revision to yaml: {e}"),
+    }
+}
+
+pub fn print_revision_short_detail(rev: &DeploymentRevision) {
+    // print header
+    println!(
+        "{:<36} {:>8} {:>8} {:>8} {:>8}",
+        "JOB ID", "ENABLED", "STEPS", "OBSERVE", "FILES"
+    );
+    for job in &rev.jobs {
+        println!(
+            "  {:<36} {:>8} {:>8} {:>8} {:>8}",
+            job.id,
+            job.enabled,
+            job.steps.len(),
+            job.observe.is_some(),
+            job.files.len()
+        );
+    }
+}
+
+pub fn print_deployment_status_snapshot(
+    snap: &DeploymentStatusSnapshot,
+    opts: &helper::RenderOpts,
+) {
+    let term_w = helper::terminal_width().unwrap_or(96).max(60);
+
+    let steps_table = helper::Table::new(
+        term_w,
+        2,
+        vec![
+            helper::ColSpec {
+                title: "",
+                min: 2,
+                max: Some(2),
+                weight: 0,
+                align: helper::Align::Left,
+                wrap: false,
+            },
+            helper::ColSpec {
+                title: "STEP",
+                min: 8,
+                max: Some(28),
+                weight: 2,
+                align: helper::Align::Left,
+                wrap: true,
+            },
+            helper::ColSpec {
+                title: "STATUS",
+                min: 8,
+                max: Some(12),
+                weight: 0,
+                align: helper::Align::Left,
+                wrap: false,
+            },
+            helper::ColSpec {
+                title: "TIME",
+                min: 8,
+                max: Some(20),
+                weight: 0,
+                align: helper::Align::Left,
+                wrap: false,
+            },
+            helper::ColSpec {
+                title: "INFO",
+                min: 12,
+                max: None,
+                weight: 6,
+                align: helper::Align::Left,
+                wrap: true,
+            },
+        ],
+    );
+
+    let mut out = String::new();
+
+    // header
+    out.push_str(&helper::kv_line(
+        term_w,
+        "deployment",
+        &helper::bold(&snap.revision_id),
+        opts,
+    ));
+    out.push('\n');
+
+    let status_txt = format!("{} {}", glyph_for_outcome(&snap.outcome), snap.outcome);
+    let status_colored = helper::colorize(opts.use_color, &status_txt, status_color(&snap.outcome));
+    out.push_str(&helper::kv_line(term_w, "status", &status_colored, opts));
+    out.push('\n');
+
+    if snap.dirty {
+        out.push_str(&helper::kv_line(
+            term_w,
+            "dirty",
+            &helper::colorize(opts.use_color, "true", helper::AnsiColor::Red),
+            opts,
+        ));
+        out.push('\n');
+    }
+
+    if let Some(e) = snap
+        .error
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        out.push_str(&helper::kv_line(term_w, "error", e, opts));
+        out.push('\n');
+    }
+
+    if !snap.runs.is_empty() {
+        out.push_str(&helper::separator_line(term_w, opts));
+        out.push('\n');
+        out.push('\n');
+    }
+
+    for run in &snap.runs {
+        let enabled = if run.enabled {
+            helper::colorize(opts.use_color, "✓ enabled", helper::AnsiColor::Green)
+        } else {
+            helper::colorize(opts.use_color, "✗ disabled", helper::AnsiColor::Red)
+        };
+
+        let outcome_txt = match run.outcome {
+            Outcome::Success => "✓ success",
+            Outcome::Failed => "✗ failure",
+            Outcome::Unknown => "? unknown",
+        };
+        let outcome_colored =
+            helper::colorize(opts.use_color, outcome_txt, status_color(&run.outcome));
+
+        let last = if run.last_update == 0 {
+            "-".to_string()
+        } else {
+            helper::format_time(run.last_update, opts.time_only)
+        };
+
+        let (steps_ok, steps_total, max_attempts, undone_steps) = step_stats_from_snapshot(run);
+
+        let mut run_info = format!(
+            "{}  {}   last update {}   steps {}/{}  max attempts {}  undone {}",
+            helper::bold(&run.run_id),
+            enabled,
+            last,
+            steps_ok,
+            steps_total,
+            max_attempts,
+            undone_steps
+        );
+
+        if let Some(e) = run
+            .error
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            run_info.push_str(&format!("   err: {}", helper::single_line(e)));
+        }
+
+        out.push_str(&run_info);
+        out.push('\n');
+
+        if run.healthy.is_some() || run.alive.is_some() {
+            out.push_str(&format!("  {}", helper::gray("observe")));
+            out.push('\n');
+        }
+
+        if let Some(h) = &run.healthy {
+            let s = if h.ok { "healthy" } else { "unhealthy" };
+            let c = if h.ok {
+                helper::AnsiColor::Green
+            } else {
+                helper::AnsiColor::Red
+            };
+            push_check_row_snapshot(
+                &mut out,
+                &steps_table,
+                opts,
+                "[health]",
+                &helper::colorize(opts.use_color, s, c),
+                h.report_time,
+                h.log_tail.as_deref().unwrap_or(""),
+                opts.show_logs_inline,
+            );
+        }
+
+        if let Some(a) = &run.alive {
+            let s = if a.ok { "alive" } else { "dead" };
+            let c = if a.ok {
+                helper::AnsiColor::Green
+            } else {
+                helper::AnsiColor::Red
+            };
+            push_check_row_snapshot(
+                &mut out,
+                &steps_table,
+                opts,
+                "[alive]",
+                &helper::colorize(opts.use_color, s, c),
+                a.report_time,
+                a.log_tail.as_deref().unwrap_or(""),
+                opts.show_logs_inline,
+            );
+        }
+
+        out.push_str(&format!(
+            "  {}    {}",
+            helper::gray("steps"),
+            outcome_colored
+        ));
+        out.push('\n');
+
+        for st in &run.steps {
+            // undo rows: show only if defined in spec AND executed (attempt exists) OR state not Pending
+            if st.is_undo && (st.attempt.is_none() && st.state == StepState::Pending) {
+                continue;
+            }
+            if st.is_undo && !st.defined_in_spec {
+                // if you keep placeholder undo rows, don’t render them
+                continue;
+            }
+
+            let (status_str, status_color) = match st.state {
+                StepState::Pending => ("… pending", helper::AnsiColor::Dim),
+                StepState::Running => ("… running", helper::AnsiColor::Yellow),
+                StepState::Success => ("✓ ok", helper::AnsiColor::Green),
+                StepState::Failed => ("✗ fail", helper::AnsiColor::Red),
+                StepState::Skipped => ("↷ skipped", helper::AnsiColor::Dim),
+            };
+            let status_colored = helper::colorize(opts.use_color, status_str, status_color);
+
+            let time_s = st
+                .last_update
+                .map(|t| helper::format_time(t, opts.time_only))
+                .unwrap_or_else(|| "-".to_string());
+
+            let mut info = String::new();
+            if let Some(a) = &st.attempt {
+                info.push_str(&format!("attempt {}", a.n));
+                if let Some(ec) = a.exit_code {
+                    info.push_str(&format!("  exit {}", ec));
+                }
+                if st.is_undo {
+                    info.push_str("  undo");
+                }
+                if let Some(e) = a.error.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    info.push_str(&format!("  err: {}", helper::single_line(e)));
+                }
+            } else {
+                info.push_str("not started");
+                if st.is_undo {
+                    info.push_str("  undo");
+                }
+            }
+
+            let name = if st.is_undo {
+                format!("{} (undo)", st.name)
+            } else {
+                st.name.clone()
+            };
+
+            steps_table.row(
+                &mut out,
+                &[
+                    "",
+                    &format!("  {}", helper::bold(&name)),
+                    &status_colored,
+                    &time_s,
+                    &info,
+                ],
+                opts,
+            );
+
+            if opts.show_logs_inline {
+                if let Some(a) = &st.attempt {
+                    if let Some(tail) = a
+                        .log_tail
+                        .as_ref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        let whitespace = format!(
+                            "{}{}",
+                            steps_table.get_column_width_as_whitespace(0),
+                            steps_table.get_column_width_as_whitespace(1)
+                        );
+                        out.push_str(&format!(
+                            "{} {}",
+                            whitespace,
+                            helper::gray(&tail.replace('\n', &format!("\n{}", whitespace)))
+                        ));
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+
+        out.push_str(&helper::separator_line(term_w, opts));
+        out.push('\n');
+    }
+
+    if let Some(rb) = &snap.rollback {
+        out.push('\n');
+        out.push_str(&helper::kv_line(
+            term_w,
+            "rollback",
+            &format!(
+                "new revision {}",
+                helper::bold(&rb.new_revision_id.clone().unwrap_or("None".to_string()))
+            ),
+            opts,
+        ));
+        out.push('\n');
+
+        if let Some(t) = rb.report_time {
+            out.push_str(&helper::kv_line(
+                term_w,
+                "time",
+                &helper::format_time(t, opts.time_only),
+                opts,
+            ));
+            out.push('\n');
+        }
+    }
+
+    tracing::info!("{out}");
+}
+
+// counts ok/total over main steps, and includes undo steps only if executed
+fn step_stats_from_snapshot(run: &RunStatus) -> (usize, usize, usize, usize) {
+    let mut ok = 0usize;
+    let mut total = 0usize;
+    let mut max_attempts = 0usize;
+
+    // main steps are expected
+    for s in run.steps.iter().filter(|s| !s.is_undo) {
+        total += 1;
+        if s.state == StepState::Success {
+            ok += 1;
+        }
+        max_attempts = max_attempts.max(s.attempts_total as usize);
+    }
+
+    // undo: count only if executed (attempt exists)
+    let mut undone = 0usize;
+    for s in run.steps.iter().filter(|s| s.is_undo) {
+        if s.attempt.is_some() {
+            undone += 1;
+            total += 1;
+            if s.state == StepState::Success {
+                ok += 1;
+            }
+            max_attempts = max_attempts.max(s.attempts_total as usize);
+        }
+    }
+
+    (ok, total, max_attempts, undone)
+}
+
+// Same formatting as your old `push_check_row`, but driven by snapshot.
+fn push_check_row_snapshot(
+    out: &mut String,
+    table: &helper::Table,
+    opts: &helper::RenderOpts,
+    label: &str,
+    status: &str,
+    report_time: u64,
+    log_tail: &str,
+    show_logs_inline: bool,
+) {
+    let tt = helper::format_time(report_time, opts.time_only);
+
+    table.row(
+        out,
+        &["", &format!("  {}", helper::bold(label)), status, &tt, ""],
+        opts,
+    );
+
+    if show_logs_inline && !log_tail.trim().is_empty() {
+        let whitespace = format!(
+            "{}{}",
+            table.get_column_width_as_whitespace(0),
+            table.get_column_width_as_whitespace(1)
+        );
+        out.push_str(&format!(
+            "{}{}",
+            whitespace,
+            helper::gray(&log_tail.replace('\n', &format!("\n{}", whitespace)))
+        ));
+        out.push('\n');
+    }
+}
+
+fn status_color(o: &Outcome) -> helper::AnsiColor {
+    match o {
+        Outcome::Success => helper::AnsiColor::Green,
+        Outcome::Failed => helper::AnsiColor::Red,
+        Outcome::Unknown => helper::AnsiColor::Dim,
+    }
+}
+
+fn glyph_for_outcome(o: &Outcome) -> &'static str {
+    match o {
+        Outcome::Success => "✓",
+        Outcome::Failed => "✗",
+        Outcome::Unknown => "?",
+    }
+}

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::DeviceClientConfig;
+use crate::deploy_spec::{DeployReportKind, DeploymentRevision};
 use crate::device::DeviceSystemInfo;
 use crate::metrics::SystemMetrics;
-use crate::services::ServiceInfo;
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct HeartbeatRequest {
@@ -14,13 +14,17 @@ pub struct HeartbeatRequest {
     pub client_version: Option<String>,
     #[serde(default)]
     pub metrics: Option<SystemMetrics>,
+    pub active_revision: String,
     #[serde(default)]
-    pub services: Option<Vec<ServiceInfo>>,
+    pub deploy_report: Option<DeployReportKind>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct HeartbeatResponse {
     pub up_to_date: bool,
+    #[serde(default)]
     pub config: Option<DeviceClientConfig>,
     pub instruction_hash: String,
+    #[serde(default)]
+    pub target_revision: Option<DeploymentRevision>,
 }

@@ -4,7 +4,11 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use axum_extra::TypedHeader;
 use futures::TryStreamExt;
 use headers::{Authorization, authorization::Bearer};
-use mongodb::{Collection, bson::Document, options::FindOptions};
+use mongodb::{
+    Collection,
+    bson::{Document, oid::ObjectId},
+    options::FindOptions,
+};
 
 use crate::{
     auth::access_control::AccessControlled,
@@ -23,6 +27,9 @@ use crate::{
 pub struct Claims {
     pub roles: Vec<RoleDoc>,
     pub is_admin: bool,
+    pub user_name: String,
+    pub user_email: String,
+    pub user_id: Option<ObjectId>,
 }
 
 impl FromRequestParts<AppState> for Claims {
@@ -43,6 +50,20 @@ impl FromRequestParts<AppState> for Claims {
 }
 
 impl Claims {
+    fn scopes_with_min_role(&self, required: Role) -> Result<Vec<String>, ServerError> {
+        let scopes: Vec<String> = self
+            .roles
+            .iter()
+            .filter(|r| Role::allows(&r.role, &required))
+            .map(|r| r.scope.clone())
+            .collect();
+        if scopes.is_empty() {
+            Err(ServerError::unauthorized("insufficient permissions"))
+        } else {
+            Ok(scopes)
+        }
+    }
+
     pub async fn from_bearer_or_key(
         token: &str,
         db: &Arc<Mongo>,
@@ -68,11 +89,17 @@ impl Claims {
                 created_at: None,
             });
 
-            let is_admin = match user.email {
-                Some(email) => config.admin_emails.contains(&email),
+            let is_admin = match &user.email {
+                Some(email) => config.admin_emails.contains(email),
                 None => false,
             };
-            Ok(Self { roles, is_admin })
+            Ok(Self {
+                roles,
+                is_admin,
+                user_name: user.name.clone().unwrap_or("unknown".to_string()),
+                user_email: user.email.clone().unwrap_or("unknown".to_string()),
+                user_id: user.id.clone(),
+            })
         } else {
             // check if token is config.admin_key
             match &config.admin_key {
@@ -81,6 +108,9 @@ impl Claims {
                         return Ok(Self {
                             roles: vec![],
                             is_admin: true,
+                            user_name: "admin".to_string(),
+                            user_email: "".to_string(),
+                            user_id: None,
                         });
                     }
                 }
@@ -93,6 +123,9 @@ impl Claims {
             Ok(Self {
                 roles,
                 is_admin: false,
+                user_name: format!("API Key {}", key_doc.name),
+                user_email: "".to_string(),
+                user_id: None,
             })
         }
     }
@@ -106,10 +139,7 @@ impl Claims {
         T: AccessControlled + Unpin + Send + Sync + serde::de::DeserializeOwned,
     {
         let mut combined = filter.clone();
-        // Admins bypass access control filtering
-        if !self.is_admin {
-            combined.extend(T::access_filter(&self.get_scopes()));
-        }
+        combined.extend(T::access_filter(&self.scopes_with_min_role(Role::Viewer)?));
         let doc = coll
             .find_one(combined)
             .await
@@ -122,11 +152,7 @@ impl Claims {
         T: AccessControlled + Unpin + Send + Sync + serde::de::DeserializeOwned,
     {
         // Admins bypass access control filtering
-        let filter = if self.is_admin {
-            Document::new()
-        } else {
-            T::access_filter(&self.get_scopes())
-        };
+        let filter = T::access_filter(&self.scopes_with_min_role(Role::Viewer)?);
         let count = coll
             .count_documents(filter)
             .await
@@ -142,12 +168,7 @@ impl Claims {
     where
         T: AccessControlled + Unpin + Send + Sync + serde::de::DeserializeOwned,
     {
-        // Admins bypass access control filtering
-        let filter = if self.is_admin {
-            Document::new()
-        } else {
-            T::access_filter(&self.get_scopes())
-        };
+        let filter = T::access_filter(&self.scopes_with_min_role(Role::Viewer)?);
 
         let options = FindOptions::builder()
             .skip(Some(pagination.offset))
@@ -160,7 +181,6 @@ impl Claims {
             .await
             .map_err(|_| ServerError::internal_error("Query failed"))?;
 
-        // Collect all documents directly (futures::TryStreamExt)
         let results: Vec<T> = cursor
             .try_collect()
             .await
@@ -180,10 +200,7 @@ impl Claims {
         T: AccessControlled + Unpin + Send + Sync + serde::de::DeserializeOwned,
     {
         let mut filter = id_filter.clone();
-        // Admins bypass access control filtering
-        if !self.is_admin {
-            filter.extend(T::access_filter(&self.get_scopes()));
-        }
+        filter.extend(T::access_filter(&self.scopes_with_min_role(Role::Editor)?));
         let res = coll
             .update_one(filter, update)
             .await
@@ -196,10 +213,6 @@ impl Claims {
         Ok(true)
     }
 
-    fn get_scopes(&self) -> Vec<String> {
-        self.roles.iter().map(|role| role.scope.clone()).collect()
-    }
-
     /// Delete with access enforcement.
     pub async fn delete_one_with_access<T>(
         &self,
@@ -210,10 +223,7 @@ impl Claims {
         T: AccessControlled + Unpin + Send + Sync + serde::de::DeserializeOwned,
     {
         let mut filter = id_filter.clone();
-        // Admins bypass access control filtering
-        if !self.is_admin {
-            filter.extend(T::access_filter(&self.get_scopes()));
-        }
+        filter.extend(T::access_filter(&self.scopes_with_min_role(Role::Editor)?));
         let res = coll
             .delete_one(filter)
             .await
@@ -235,15 +245,6 @@ impl Claims {
     where
         T: AccessControlled + serde::de::DeserializeOwned + Unpin + Send + Sync,
     {
-        // Admins bypass access control filtering
-        if self.is_admin {
-            let doc = coll
-                .find_one(base_filter)
-                .await
-                .map_err(|e| ServerError::internal_error(&format!("DB query failed: {}", e)))?;
-            return Ok(doc);
-        }
-
         // Get all scopes for which user has >= required_role
         let allowed_scopes: Vec<String> = self
             .roles

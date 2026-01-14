@@ -17,6 +17,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::api::client_connection::ClientConn;
 use crate::auth::claims::Claims;
+use crate::models::audit_logs::AuditLogDoc;
 use crate::models::device::DeviceDoc;
 use crate::response::ServerError;
 use crate::response::ServerResult;
@@ -157,14 +158,54 @@ async fn handle_quic_connection(conn: quinn::Connection, state: AppState) -> Ser
     }
 
     if let Some(device_id) = extract_device_id_from_sni(&sni, public) {
-        let _ = claims
+        let res = claims
             .find_one_with_scope_and_role::<DeviceDoc>(
                 &state.db.devices(),
                 doc! { "short_id": &device_id },
                 Role::Editor,
             )
-            .await?
-            .ok_or_else(|| ServerError::not_found("Device not found"))?;
+            .await;
+        // .await?
+        // .ok_or_else(|| ServerError::not_found("Device not found"))?;
+        match res {
+            Ok(Some(device)) => {
+                let _ = AuditLogDoc::add(
+                    &state.db,
+                    &claims,
+                    &state.config,
+                    "Connected to device",
+                    "",
+                    device.id.clone(),
+                )
+                .await;
+            }
+            Ok(None) => {
+                let _ = AuditLogDoc::add(
+                    &state.db,
+                    &claims,
+                    &state.config,
+                    &format!("Tried connecting to invalid device {}", &device_id),
+                    "device not found",
+                    None,
+                )
+                .await;
+                error!(%sni, "device not found");
+                return Err(ServerError::not_found("Device not found"));
+            }
+            Err(e) => {
+                error!(%sni, %e, "error finding device");
+                let _ = AuditLogDoc::add(
+                    &state.db,
+                    &claims,
+                    &state.config,
+                    &format!("Error on accessing device {}", &device_id),
+                    &format!("{:?}", &e),
+                    None,
+                )
+                .await;
+                return Err(ServerError::not_found("Device not found"));
+            }
+        };
 
         if state.relay.has_tunnel(&device_id).await {
             debug!(%device_id, "forwarding to device");
@@ -322,7 +363,7 @@ async fn run_heartbeat_loop(
                     break;
                 };
 
-                let body = device.handle_heartbeat(claims.clone(), &state.db, req).await?;
+                let body = device.handle_heartbeat(claims.clone(), &state.db, req, &state.config).await?;
 
                 info!("sending heartbeat response");
                 match write_msg(&mut send, &body).await {

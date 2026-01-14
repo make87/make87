@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow};
-use m87_shared::config::ObservationConfig;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "runtime")]
 use sha1::{Digest, Sha1};
@@ -42,8 +41,6 @@ pub struct Config {
 
     #[serde(default)]
     pub manager_server_urls: Vec<String>,
-    #[serde(default)]
-    pub observe: ObservationConfig,
 }
 
 impl Default for Config {
@@ -61,7 +58,6 @@ impl Default for Config {
             auth_client_id: "E2J7xfFLgexzvhHhz4YqaJBy8Ys82SmM".to_string(),
             trust_invalid_server_cert: false,
             manager_server_urls: vec![],
-            observe: ObservationConfig::default(),
         }
     }
 }
@@ -176,7 +172,7 @@ impl Config {
 
     /// Get config directory, respecting SUDO_USER on Unix systems.
     /// Falls back to dirs::config_dir() which handles platform specifics.
-    fn get_config_dir() -> Result<PathBuf> {
+    pub fn get_config_dir() -> Result<PathBuf> {
         // Check for SUDO_USER (Unix only - Windows doesn't have sudo)
         #[cfg(unix)]
         if let Ok(sudo_user) = std::env::var("SUDO_USER") {

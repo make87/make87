@@ -14,6 +14,14 @@ fn default_webtransport_port() -> u16 {
     8085
 }
 
+fn default_report_retention_days() -> u32 {
+    7
+}
+
+fn default_audit_retention_days() -> u32 {
+    7
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub mongo_uri: String,
@@ -29,13 +37,17 @@ pub struct AppConfig {
     pub users_need_approval: bool,
     pub user_auto_accept_domains: Vec<String>,
     pub certificate_path: String,
+    #[serde(default = "default_report_retention_days")]
+    pub report_retention_days: u32,
+    #[serde(default = "default_audit_retention_days")]
+    pub audit_retention_days: u32,
 }
 
 impl AppConfig {
     pub fn from_env() -> ServerResult<Self> {
         // Keep it simple: read from env; in prod you might use figment/envy.
         let mongo_uri =
-            std::env::var("MONGO_URI").unwrap_or_else(|_| "mongodb://localhost:27017".into());
+            std::env::var("MONGO_URI").unwrap_or_else(|_| "mongodb://a:b@localhost:27017".into());
         let mongo_db = std::env::var("MONGO_DB").unwrap_or_else(|_| "m87-server".into());
         let issuer =
             std::env::var("OAUTH_ISSUER").unwrap_or_else(|_| "https://auth.make87.com/".into());
@@ -76,6 +88,15 @@ impl AppConfig {
 
         let admin_key = std::env::var("ADMIN_KEY").ok();
 
+        let report_retention_days = std::env::var("REPORT_RETENTION_DAYS")
+            .unwrap_or_else(|_| "7".to_string())
+            .parse()
+            .unwrap();
+        let audit_retention_days = std::env::var("AUDIT_RETENTION_DAYS")
+            .unwrap_or_else(|_| "7".to_string())
+            .parse()
+            .unwrap();
+
         Ok(Self {
             mongo_uri,
             mongo_db,
@@ -89,6 +110,8 @@ impl AppConfig {
             user_auto_accept_domains,
             certificate_path,
             admin_key,
+            report_retention_days,
+            audit_retention_days,
         })
     }
 }

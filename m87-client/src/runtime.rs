@@ -1,17 +1,19 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::{self, Permissions};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 use tokio::{
-    signal::unix::{signal, SignalKind},
-    time::{sleep, Duration},
+    signal::unix::{SignalKind, signal},
+    time::{Duration, sleep},
 };
 use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::device::control_tunnel;
+use crate::device::deployment_manager::DeploymentManager;
 use crate::util::command::current_exe_path;
 use crate::util::shutdown::SHUTDOWN;
 use crate::util::system_info::get_system_info;
@@ -317,8 +319,10 @@ pub async fn run() -> Result<()> {
     info!("Running device");
 
     // Handle both SIGTERM (systemd stop) and SIGINT (Ctrl+C)
-    let mut sigterm = signal(SignalKind::terminate()).context("Failed to register SIGTERM handler")?;
-    let mut sigint = signal(SignalKind::interrupt()).context("Failed to register SIGINT handler")?;
+    let mut sigterm =
+        signal(SignalKind::terminate()).context("Failed to register SIGTERM handler")?;
+    let mut sigint =
+        signal(SignalKind::interrupt()).context("Failed to register SIGINT handler")?;
 
     tokio::select! {
         _ = login_and_run() => {},
@@ -349,13 +353,17 @@ async fn login_and_run() -> Result<()> {
         sleep(Duration::from_secs(1)).await;
     }
 
+    let unit_manager = DeploymentManager::new().await?;
+    let manager = Arc::new(unit_manager);
+    manager.clone().start();
+
     loop {
         if SHUTDOWN.is_cancelled() {
             break;
         }
         info!("Starting control tunnel...");
         tokio::select! {
-            result = control_tunnel::connect_control_tunnel() => {
+            result = control_tunnel::connect_control_tunnel(manager.clone()) => {
                 match result {
                     Err(e) => {
                         error!("Control tunnel crashed with error: {e}. Reconnecting in 5 seconds...");

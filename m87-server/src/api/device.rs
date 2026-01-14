@@ -1,11 +1,14 @@
 use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
-use m87_shared::services::ServiceInfo;
+use m87_shared::device::{AuditLog, DeviceStatus};
+use m87_shared::roles::Role;
 use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
 
+use crate::api::deploy_spec::create_route as deploy_spec_route;
 use crate::auth::claims::Claims;
+use crate::models::audit_logs::AuditLogDoc;
 use crate::models::device::{DeviceDoc, PublicDevice, UpdateDeviceBody};
 use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
 use crate::util::app_state::AppState;
@@ -20,7 +23,9 @@ pub fn create_route() -> Router<AppState> {
                 .post(update_device_by_id)
                 .delete(delete_device),
         )
-        .route("/{id}/services", get(get_services))
+        .route("/{id}/status", get(get_device_status))
+        .route("/{id}/audit_logs", get(get_audit_logs_by_device_id))
+        .merge(deploy_spec_route())
 }
 
 async fn get_devices(
@@ -82,7 +87,15 @@ async fn update_device_by_id(
 ) -> ServerAppResult<PublicDevice> {
     let device_id =
         ObjectId::parse_str(&id).map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
-
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Requested device update {}", &device_id),
+        &format!("{}", &payload),
+        Some(device_id.clone()),
+    )
+    .await;
     // Build the Mongo update document
     let update_doc = payload.to_update_doc(); // implement this helper on UpdateDeviceBody
 
@@ -101,8 +114,19 @@ async fn update_device_by_id(
         None => return Err(ServerError::not_found("Device not found after update")),
     };
 
+    let pub_device = updated_device.into();
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Updated device {}", &device_id),
+        &format!("{}", &pub_device),
+        Some(device_id.clone()),
+    )
+    .await;
+
     Ok(ServerResponse::builder()
-        .body(updated_device.into())
+        .body(pub_device)
         .status_code(axum::http::StatusCode::OK)
         .build())
 }
@@ -113,33 +137,80 @@ async fn delete_device(
     Path(id): Path<String>,
 ) -> ServerAppResult<()> {
     let device_oid = ObjectId::parse_str(&id)?;
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Requested device deletion {}", &device_oid),
+        "",
+        Some(device_oid.clone()),
+    )
+    .await;
     let device_opt = claims
         .find_one_with_access(&state.db.devices(), doc! { "_id": device_oid })
         .await?;
     let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
 
     let _ = device.remove_device(&claims, &state.db).await?;
-
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Deleted device {}", &device_oid),
+        "",
+        Some(device_oid.clone()),
+    )
+    .await;
     Ok(ServerResponse::builder()
         .status_code(axum::http::StatusCode::NO_CONTENT)
         .build())
 }
 
-async fn get_services(
+async fn get_audit_logs_by_device_id(
     claims: Claims,
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ServerAppResult<Vec<ServiceInfo>> {
+    pagination: RequestPagination,
+) -> ServerAppResult<Vec<AuditLog>> {
     let device_oid = ObjectId::parse_str(&id)?;
     let device_opt = claims
-        .find_one_with_access(&state.db.devices(), doc! { "_id": device_oid })
+        .find_one_with_scope_and_role(
+            &state.db.devices(),
+            doc! { "_id": &device_oid },
+            Role::Admin,
+        )
+        .await?;
+    let _ = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    let audit_logs = AuditLogDoc::list_for_device(&state.db, device_oid, &pagination).await?;
+    let audit_logs: Vec<AuditLog> = audit_logs.iter().map(|log| log.to_audit_log()).collect();
+
+    Ok(ServerResponse::builder()
+        .body(audit_logs)
+        .status_code(axum::http::StatusCode::OK)
+        .build())
+}
+
+async fn get_device_status(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    // Query(since): Query<Option<u32>>,
+) -> ServerAppResult<DeviceStatus> {
+    let device_oid = ObjectId::parse_str(&id)?;
+    let device_opt = claims
+        .find_one_with_scope_and_role(
+            &state.db.devices(),
+            doc! { "_id": &device_oid },
+            Role::Editor,
+        )
         .await?;
     let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
 
-    let services = device.get_services(&state.db).await?;
+    let status = device.get_status(&state.db).await?;
 
     Ok(ServerResponse::builder()
-        .body(services)
+        .body(status)
         .status_code(axum::http::StatusCode::OK)
         .build())
 }

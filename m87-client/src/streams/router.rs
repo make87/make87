@@ -1,7 +1,9 @@
 use bytes::Bytes;
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 // use crate::streams::auth::validate_token;
+use crate::device::deployment_manager::DeploymentManager;
 use crate::streams::quic::QuicIo;
 use crate::streams::serial::handle_serial_io;
 use crate::streams::stream_type::StreamType;
@@ -16,6 +18,7 @@ pub async fn handle_incoming_stream(
     mut io: QuicIo,
     manager: UdpChannelManager,
     datagram_tx: tokio::sync::mpsc::Sender<(u32, Bytes)>,
+    unit_manager: Arc<DeploymentManager>,
 ) -> anyhow::Result<()> {
     debug!("router: parsing stream type header");
     let stream_type = match StreamType::from_incoming_stream(&mut io.recv).await {
@@ -45,7 +48,7 @@ pub async fn handle_incoming_stream(
         }
         StreamType::Logs { .. } => {
             debug!("router: dispatching to logs handler");
-            let _ = handle_logs_io(&mut io).await;
+            let _ = handle_logs_io(&mut io, unit_manager).await;
         }
         StreamType::Forward { target, .. } => {
             debug!("router: dispatching to port forward handler");

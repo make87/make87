@@ -34,6 +34,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 anyhow = { workspace = true }
 reqwest = { workspace = true }
@@ -96,3 +97,4 @@ libc = "=0.2.177"
 
 # Time parsing for relative timestamps
 chrono = "0.4"
+sha2 = "0.10.9"

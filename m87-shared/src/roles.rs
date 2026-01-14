@@ -10,14 +10,16 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn allows(have: &Role, need: &Role) -> bool {
-        use Role::*;
-        match (have, need) {
-            (Owner, _) => true,
-            (Admin, Admin) | (Admin, Editor) | (Admin, Viewer) => true,
-            (Editor, Editor) | (Editor, Viewer) => true,
-            (Viewer, Viewer) => true,
-            _ => false,
+    fn rank(&self) -> u8 {
+        match self {
+            Role::Viewer => 0,
+            Role::Editor => 1,
+            Role::Admin => 2,
+            Role::Owner => 3,
         }
+    }
+
+    pub fn allows(have: &Role, need: &Role) -> bool {
+        have.rank() >= need.rank()
     }
 }
