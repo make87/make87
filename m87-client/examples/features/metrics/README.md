@@ -1,35 +1,36 @@
-# System Stats
+# System Metrics
 
 Real-time system metrics dashboard for remote devices.
 
 ## Overview
 
-`m87 <device> stats` displays a TUI dashboard with live system metrics from the remote device.
+`m87 <device> metrics` displays a TUI dashboard with live system metrics from the remote device.
 
 ## Basic Usage
 
 ```bash
-m87 <device> stats
+m87 <device> metrics
 ```
 
 ## Dashboard Metrics
 
 | Metric | Description |
 |--------|-------------|
-| CPU | Per-core usage percentages |
-| Memory | Used/total RAM, swap usage |
-| Disk | Filesystem usage per mount point |
-| Network | Bytes sent/received per interface |
-| Temperatures | CPU/GPU temperatures (if available) |
+| System | Hostname, OS, architecture, uptime, overall CPU % |
+| CPU | Per-core usage sparklines with percentages |
+| Memory | Usage gauge and history sparkline |
+| Disk | Usage gauge and history sparkline |
+| Network | Interface table (RX/TX bytes) and throughput sparklines (Mbps) |
+| GPU | Memory usage and utilization (if available) |
 
 ## Examples
 
 ```bash
 # Monitor a Raspberry Pi
-m87 rpi stats
+m87 rpi metrics
 
 # Monitor a server
-m87 db-server stats
+m87 db-server metrics
 ```
 
 ## Controls
@@ -43,7 +44,7 @@ m87 db-server stats
 
 ### Quick Health Check
 ```bash
-m87 rpi stats
+m87 rpi metrics
 # Glance at CPU, memory, disk usage
 # Press q to exit
 ```
@@ -51,13 +52,13 @@ m87 rpi stats
 ### Debugging Performance Issues
 ```bash
 # Check if device is resource-constrained
-m87 edge-node stats
+m87 edge-node metrics
 ```
 
 ### Monitoring During Deployment
 ```bash
 # Terminal 1: Watch metrics
-m87 rpi stats
+m87 rpi metrics
 
 # Terminal 2: Deploy application
 m87 sync ./app rpi:/home/pi/myapp

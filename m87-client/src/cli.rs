@@ -226,7 +226,8 @@ pub enum DeviceCommand {
         tail: usize,
     },
     /// Show device system metrics
-    Stats,
+    #[clap(alias = "stats")]
+    Metrics,
     /// Execute a command on the device
     Exec {
         /// Keep stdin open (for responding to prompts)
@@ -828,7 +829,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             Ok(())
         }
 
-        DeviceCommand::Stats => {
+        DeviceCommand::Metrics => {
             tui::metrics::run_metrics(&device).await?;
             Ok(())
         }
