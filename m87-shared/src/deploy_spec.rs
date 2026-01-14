@@ -204,7 +204,7 @@ pub struct RunSpec {
     pub workdir: Option<Workdir>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub files: BTreeMap<String, String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
 
     #[serde(default)]
@@ -213,7 +213,7 @@ pub struct RunSpec {
     pub on_failure: Option<OnFailure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop: Option<StopSpec>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "RebootMode::is_none")]
     pub reboot: RebootMode,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,6 +283,12 @@ pub enum RebootMode {
     None,
     Request,
     Auto,
+}
+
+impl RebootMode {
+    pub fn is_none(v: &RebootMode) -> bool {
+        matches!(v, RebootMode::None)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -441,7 +447,7 @@ impl Default for ObserveHooks {
 pub struct Workdir {
     #[serde(default)]
     pub mode: WorkdirMode,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>, // if omitted: agent uses root_dir/programs/<id>
 }
 
@@ -476,7 +482,7 @@ pub struct DeploymentRevisionReport {
     pub revision_id: String,
     pub outcome: Outcome,
     pub dirty: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -486,9 +492,11 @@ pub struct RunReport {
     pub revision_id: String,
 
     pub outcome: Outcome,
+    #[serde(default)]
+    pub report_time: u64,
 
     /// If outcome is failure, set an error string.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -496,10 +504,10 @@ pub struct RunReport {
 pub struct StepReport {
     pub revision_id: String,
     pub run_id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub attempts: u32,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     pub report_time: u64,
 
@@ -511,7 +519,7 @@ pub struct StepReport {
     pub is_undo: bool,
 
     /// If it failed, short error text.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 
     /// Best-effort log tail for this step only (bounded).
@@ -522,19 +530,13 @@ pub struct StepReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RollbackReport {
     pub revision_id: String,
-    /// Whether rollback completed successfully.
-    pub success: bool,
 
-    /// Which step indexes had undo executed (reverse order typically).
-    #[serde(default)]
-    pub undone_steps: Vec<u32>,
+    pub new_revision_id: Option<String>,
+}
 
-    /// Any rollback error.
-    #[serde(default)]
-    pub error: Option<String>,
-
-    #[serde(default)]
-    pub log_tail: String,
+pub enum ObserveKind {
+    Alive,
+    Healthy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -546,6 +548,16 @@ pub struct RunState {
     pub report_time: u64,
     #[serde(default)]
     pub log_tail: Option<String>,
+}
+
+impl RunState {
+    pub fn as_observe_update(&self) -> Option<(ObserveKind, bool, Option<String>)> {
+        match (&self.healthy, &self.alive) {
+            (Some(a), _) => Some((ObserveKind::Healthy, a.clone(), self.log_tail.clone())),
+            (None, Some(a)) => Some((ObserveKind::Alive, a.clone(), self.log_tail.clone())),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -675,4 +687,89 @@ pub mod option_duration_human {
 
 pub fn build_instruction_hash(deploy_hash: &str, config_hash: &str) -> String {
     format!("{}-{}", deploy_hash, config_hash)
+}
+
+// structs for UI and cli to display reports
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeploymentStatusSnapshot {
+    pub revision_id: String,
+    pub outcome: Outcome, // overall
+    pub dirty: bool,
+    pub error: Option<String>,
+
+    pub rollback: Option<RollbackStatus>,
+
+    // Spec-ordered runs (jobs)
+    pub runs: Vec<RunStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunStatus {
+    pub run_id: String,
+    pub enabled: bool,
+    pub run_type: RunType,
+
+    pub outcome: Outcome, // derived from steps + run report
+    pub last_update: u64,
+    pub error: Option<String>,
+
+    // observe overlays (latest only)
+    pub alive: Option<ObserveStatusItem>,
+    pub healthy: Option<ObserveStatusItem>,
+
+    // Spec-ordered steps (including optional undo as a separate row)
+    pub steps: Vec<StepStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepStatus {
+    pub step_id: String, // stable id; see below
+    pub name: String,
+    pub is_undo: bool,
+
+    // “expectedness”
+    pub defined_in_spec: bool, // true for normal steps; for undo true only if undo exists in spec
+    pub state: StepState,      // Pending/Running/Success/Failed/Skipped
+    pub last_update: Option<u64>,
+
+    // latest attempt (bounded)
+    pub attempt: Option<StepAttemptStatus>,
+
+    // aggregates (small)
+    pub attempts_total: u32,
+    pub exit_code: Option<i32>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepAttemptStatus {
+    pub n: u32,
+    pub report_time: u64,
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub error: Option<String>,
+    pub log_tail: Option<String>, // capped size on server
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObserveStatusItem {
+    pub report_time: u64,
+    pub ok: bool,
+    pub log_tail: Option<String>, // capped
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackStatus {
+    pub report_time: Option<u64>,
+    pub new_revision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum StepState {
+    Pending, // defined in spec, no report yet
+    Running, // if you emit “started” reports; else omit
+    Success,
+    Failed,
+    Skipped, // if you implement skip semantics
 }

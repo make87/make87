@@ -51,7 +51,9 @@ pub struct LocalRunState {
     #[serde(default)]
     pub ran_successful: bool,
     #[serde(default)]
-    pub reported_once: bool,
+    pub reported_health_once: bool,
+    #[serde(default)]
+    pub reported_alive_once: bool,
     #[serde(default)]
     pub last_health: bool,
     #[serde(default)]
@@ -94,26 +96,30 @@ impl ObserveKind {
 
     fn decide_on_success(&self, st: &LocalRunState) -> bool {
         match self {
-            ObserveKind::Liveness => st.last_alive == false || !st.reported_once,
+            ObserveKind::Liveness => st.last_alive == false || !st.reported_alive_once,
             ObserveKind::Health => {
-                st.last_health != true || st.last_alive != true || !st.reported_once
+                st.last_health != true || st.last_alive != true || !st.reported_health_once
             }
         }
     }
 
     fn decide_on_error(
         &self,
-        st: &LocalRunState,
+        _st: &LocalRunState,
         hooks: &ObserveHooks,
         consecutive: u32,
     ) -> ObserveDecision {
         let fails_after = hooks.fails_after.unwrap_or(1);
         let is_failure = consecutive > 0 && (consecutive % fails_after == 0);
-
-        let needs_send = match self {
-            ObserveKind::Liveness => (st.last_alive == false || !st.reported_once) && is_failure,
-            ObserveKind::Health => (st.last_health == true || !st.reported_once) && is_failure,
-        };
+        let needs_send = is_failure;
+        // let needs_send = match self {
+        //     ObserveKind::Liveness => {
+        //         (st.last_alive == false || !st.reported_alive_once) && is_failure
+        //     }
+        //     ObserveKind::Health => {
+        //         (st.last_health == true || !st.reported_health_once) && is_failure
+        //     }
+        // };
         // consecutive here is consecutive / fails after since we care about consecutive crashes we consider consecutive failures
         // round down
 
@@ -711,6 +717,7 @@ impl DeploymentManager {
                     run_id: spec.id.clone(),
                     revision_id: revision_id.to_string(),
                     outcome: Outcome::Success,
+                    report_time: now_ms_u64(),
                     error: None,
                 }))
                 .await;
@@ -721,6 +728,7 @@ impl DeploymentManager {
                     run_id: spec.id.clone(),
                     revision_id: revision_id.to_string(),
                     outcome: Outcome::Failed,
+                    report_time: now_ms_u64(),
                     error: Some(e.to_string()),
                 }))
                 .await;
@@ -813,7 +821,14 @@ impl DeploymentManager {
                     )))
                     .await;
 
-                    st.reported_once = true;
+                    match kind {
+                        ObserveKind::Health => {
+                            st.reported_health_once = true;
+                        }
+                        ObserveKind::Liveness => {
+                            st.reported_alive_once = true;
+                        }
+                    }
                     LocalRunState::save(&wd, &st)?;
                 }
 
@@ -829,10 +844,8 @@ impl DeploymentManager {
                 let consecutive = *failures;
 
                 let decision = kind.decide_on_error(&st, hooks, consecutive);
-
-                *st.last_mut(kind) = false;
-                if let ObserveKind::Liveness = kind {
-                    st.last_alive = false;
+                if decision.is_failure {
+                    *st.last_mut(kind) = false;
                 }
 
                 LocalRunState::save(&wd, &st)?;
@@ -900,7 +913,15 @@ impl DeploymentManager {
                     )))
                     .await;
 
-                    st.reported_once = true;
+                    match kind {
+                        ObserveKind::Health => {
+                            st.reported_health_once = true;
+                        }
+                        ObserveKind::Liveness => {
+                            st.reported_alive_once = true;
+                        }
+                    }
+
                     LocalRunState::save(&wd, &st)?;
                 }
 
@@ -999,10 +1020,7 @@ impl DeploymentManager {
                 tracing::error!("No previous configuration available for rollback");
                 let _ = enqueue_event(DeployReportKind::RollbackReport(RollbackReport {
                     revision_id: revision_id.to_string(),
-                    success: false,
-                    undone_steps: vec![],
-                    error: Some("No previous configuration available".to_string()),
-                    log_tail: "".to_string(),
+                    new_revision_id: None,
                 }));
                 return Err(anyhow!("No previous configuration available"));
             }
@@ -1014,15 +1032,12 @@ impl DeploymentManager {
         );
 
         // Apply previous configuration (this will reset deployment_started_at)
-        self.set_desired_units(prev_config).await?;
+        self.set_desired_units(prev_config.clone()).await?;
 
         // TODO: this jsut changes the target revision. Rollback happens in the main loop ehwn this returns
         let _ = enqueue_event(DeployReportKind::RollbackReport(RollbackReport {
             revision_id: revision_id.to_string(),
-            success: true,
-            undone_steps: vec![],
-            error: None,
-            log_tail: "".to_string(),
+            new_revision_id: prev_config.id,
         }));
 
         tracing::info!("Rollback complete");
@@ -1304,8 +1319,22 @@ async fn run_step(
             error: None,
             report_time: now_ms_u64(),
         }),
-        Err(RunCommandError::Other(e)) => Err(e),
-        Err(RunCommandError::Io(e)) => Err(e.into()),
+        Err(RunCommandError::Other(e)) => {
+            tracing::error!(
+                "Failed to run step {}: {}",
+                step.name.clone().unwrap_or(format!("{}", step.run)),
+                e
+            );
+            Err(e)
+        }
+        Err(RunCommandError::Io(e)) => {
+            tracing::error!(
+                "Failed to run step {}: {}",
+                step.name.clone().unwrap_or(format!("{}", step.run)),
+                e
+            );
+            Err(e.into())
+        }
         Err(RunCommandError::Failed(e)) => Ok(StepReport {
             revision_id: revision_id.to_string(),
             run_id: unit_id.to_string(),

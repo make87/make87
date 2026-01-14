@@ -1,7 +1,7 @@
 use crate::{
     tui::helper::{
-        Align, ColSpec, RenderOpts, Table, bold, cyan, dim, format_relative_time, green,
-        pending_badge, red, status_badge, terminal_width, yellow,
+        Align, ColSpec, RenderOpts, Table, bold, cyan, dim, green, pending_badge, red,
+        status_badge, terminal_width, yellow,
     },
     util::device_cache::try_get_name_from_long_id,
 };
@@ -369,8 +369,8 @@ pub fn print_deployment_reports(reports: &[AuditLog], show_details: bool) {
         vec![
             ColSpec {
                 title: "TIME",
-                min: 8,
-                max: Some(12),
+                min: 22,
+                max: Some(25),
                 weight: 0,
                 align: Align::Left,
                 wrap: false,
@@ -415,7 +415,7 @@ pub fn print_deployment_reports(reports: &[AuditLog], show_details: bool) {
     };
 
     for r in reports {
-        let time = format_relative_time(&r.timestamp);
+        let time = r.timestamp.clone();
         let user = format!("{} <{}>", r.user_name, r.user_email);
         let action = action_badge(&r.action);
         let device = match &r.device_id {

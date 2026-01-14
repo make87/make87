@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, anyhow, bail};
 use m87_shared::deploy_spec::{
-    CommandSpec, CreateDeployRevisionBody, DeployReport, DeploymentRevision, LogSpec, ObserveHooks,
-    ObserveSpec, OnFailure, RebootMode, RetrySpec, RunSpec, RunType, Step, StopSpec, Undo,
-    UndoMode, UpdateDeployRevisionBody, Workdir, WorkdirMode,
+    CommandSpec, CreateDeployRevisionBody, DeployReport, DeploymentRevision,
+    DeploymentStatusSnapshot, LogSpec, ObserveHooks, ObserveSpec, OnFailure, RebootMode, RetrySpec,
+    RunSpec, RunType, Step, StopSpec, Undo, UndoMode, UpdateDeployRevisionBody, Workdir,
+    WorkdirMode,
 };
 use serde_yaml::Value;
 use std::collections::BTreeMap;
@@ -679,4 +680,23 @@ pub async fn get_deployment_reports(
             .context("failed to fetch source deployment")?;
 
     Ok(reports)
+}
+
+pub async fn get_deployment_snapshot(
+    device_name: &str,
+    deployment_id: &str,
+) -> Result<DeploymentStatusSnapshot> {
+    let (device_id, api_url, token, trust_invalid) = ctx_for_device(device_name).await?;
+
+    let snapshot = server::get_device_revision_snapshot(
+        &api_url,
+        &token,
+        trust_invalid,
+        &device_id,
+        &deployment_id,
+    )
+    .await
+    .context("failed to fetch source deployment")?;
+
+    Ok(snapshot)
 }

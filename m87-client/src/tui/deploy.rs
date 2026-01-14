@@ -1,8 +1,5 @@
-use std::collections::HashMap;
-
 use m87_shared::deploy_spec::{
-    DeployReport, DeployReportKind, DeploymentRevision, DeploymentRevisionReport, Outcome,
-    RollbackReport, RunReport, RunState, StepReport,
+    DeploymentRevision, DeploymentStatusSnapshot, Outcome, RunStatus, StepState,
 };
 
 use crate::tui::helper;
@@ -52,23 +49,12 @@ pub fn print_revision_short_detail(rev: &DeploymentRevision) {
     }
 }
 
-#[derive(Default)]
-struct RunAgg {
-    run_id: String,
-    run_report: Option<RunReport>,
-    steps: Vec<StepReport>,
-    states: Vec<RunState>,
-    last_time: u64,
-}
-
-pub fn print_deployment_reports(
-    reports: &[DeployReport],
-    deployment: &DeploymentRevision,
+pub fn print_deployment_status_snapshot(
+    snap: &DeploymentStatusSnapshot,
     opts: &helper::RenderOpts,
 ) {
     let term_w = helper::terminal_width().unwrap_or(96).max(60);
 
-    // Steps table: cap the NAME column so it can't eat everything.
     let steps_table = helper::Table::new(
         term_w,
         2,
@@ -77,14 +63,14 @@ pub fn print_deployment_reports(
                 title: "",
                 min: 2,
                 max: Some(2),
-                weight: 1,
+                weight: 0,
                 align: helper::Align::Left,
-                wrap: true,
+                wrap: false,
             },
             helper::ColSpec {
                 title: "STEP",
                 min: 8,
-                max: Some(26),
+                max: Some(28),
                 weight: 2,
                 align: helper::Align::Left,
                 wrap: true,
@@ -92,46 +78,7 @@ pub fn print_deployment_reports(
             helper::ColSpec {
                 title: "STATUS",
                 min: 8,
-                max: Some(10),
-                weight: 0,
-                align: helper::Align::Left,
-                wrap: false,
-            },
-            helper::ColSpec {
-                title: "TIME",
-                min: 8,
-                max: Some(20),
-                weight: 0,
-                align: helper::Align::Left,
-                wrap: false,
-            },
-            helper::ColSpec {
-                title: "INFO",
-                min: 12,
-                max: None,
-                weight: 5,
-                align: helper::Align::Left,
-                wrap: true,
-            },
-        ],
-    );
-
-    let rb_table = helper::Table::new(
-        term_w,
-        2,
-        vec![
-            helper::ColSpec {
-                title: "ROLLBACK",
-                min: 10,
-                max: Some(10),
-                weight: 1,
-                align: helper::Align::Left,
-                wrap: true,
-            },
-            helper::ColSpec {
-                title: "STATUS",
-                min: 8,
-                max: Some(10),
+                max: Some(12),
                 weight: 0,
                 align: helper::Align::Left,
                 wrap: false,
@@ -155,283 +102,226 @@ pub fn print_deployment_reports(
         ],
     );
 
-    // Aggregate
-    let mut rev: Option<DeploymentRevisionReport> = None;
-    let mut rollback: Option<RollbackReport> = None;
-    let mut runs: HashMap<String, RunAgg> = HashMap::new();
-
-    for r in reports {
-        match &r.kind {
-            DeployReportKind::DeploymentRevisionReport(x) => rev = Some(x.clone()),
-            DeployReportKind::RollbackReport(x) => rollback = Some(x.clone()),
-            DeployReportKind::RunReport(x) => {
-                let e = runs.entry(x.run_id.clone()).or_insert_with(|| RunAgg {
-                    run_id: x.run_id.clone(),
-                    ..Default::default()
-                });
-                e.run_report = Some(x.clone());
-            }
-            DeployReportKind::StepReport(x) => {
-                let e = runs.entry(x.run_id.clone()).or_insert_with(|| RunAgg {
-                    run_id: x.run_id.clone(),
-                    ..Default::default()
-                });
-                e.last_time = e.last_time.max(x.report_time);
-                e.steps.push(x.clone());
-            }
-            DeployReportKind::RunState(x) => {
-                let e = runs.entry(x.run_id.clone()).or_insert_with(|| RunAgg {
-                    run_id: x.run_id.clone(),
-                    ..Default::default()
-                });
-                e.last_time = e.last_time.max(x.report_time as u64);
-                e.states.push(x.clone());
-            }
-        }
-    }
-
-    let mut run_list: Vec<RunAgg> = runs
-        .into_values()
-        .map(|mut ra| {
-            ra.steps.sort_by_key(|s| s.report_time);
-            ra.states.sort_by_key(|s| s.report_time);
-            ra
-        })
-        .collect();
-
-    run_list.sort_by(|a1, a2| {
-        let o1 = run_outcome(a1);
-        let o2 = run_outcome(a2);
-        outcome_rank(o1)
-            .cmp(&outcome_rank(o2))
-            .then_with(|| a2.last_time.cmp(&a1.last_time))
-            .then_with(|| a1.run_id.cmp(&a2.run_id))
-    });
-
     let mut out = String::new();
 
-    // REVISION header (label + compact info)
-    let (rev_id, rev_status, rev_dirty, rev_err) = if let Some(r) = &rev {
-        (
-            r.revision_id.clone(),
-            r.outcome.clone(),
-            Some(r.dirty),
-            r.error.clone(),
-        )
-    } else {
-        let rid = reports
-            .first()
-            .map(|x| x.revision_id.clone())
-            .unwrap_or_else(|| "unknown".to_string());
-        (rid, Outcome::Unknown, None, None)
-    };
-
-    let status_txt = format!("{} {}", glyph_for_outcome(&rev_status), rev_status);
-    let status_colored = helper::colorize(opts.use_color, &status_txt, status_color(&rev_status));
-
-    let t = helper::format_time(best_updated_time(&run_list, reports), opts.time_only);
-
-    let dirty_flag = if rev_dirty.unwrap_or(false) {
-        helper::colorize(opts.use_color, "dirty", helper::AnsiColor::Red)
-    } else {
-        "".to_string()
-    };
-
+    // header
     out.push_str(&helper::kv_line(
         term_w,
         "deployment",
-        &helper::bold(&rev_id),
+        &helper::bold(&snap.revision_id),
         opts,
     ));
     out.push('\n');
 
-    // status/time line (separate so id line stays clean)
-    let st = format!(
-        "{}   {}{}",
-        status_colored,
-        t,
-        if dirty_flag.is_empty() { "" } else { "   " }
-    );
-    let st = if dirty_flag.is_empty() {
-        st
-    } else {
-        format!("{st}{dirty_flag}")
-    };
-    out.push_str(&helper::kv_line(term_w, "status", &st, opts));
+    let status_txt = format!("{} {}", glyph_for_outcome(&snap.outcome), snap.outcome);
+    let status_colored = helper::colorize(opts.use_color, &status_txt, status_color(&snap.outcome));
+    out.push_str(&helper::kv_line(term_w, "status", &status_colored, opts));
     out.push('\n');
 
-    if let Some(err) = rev_err {
-        out.push_str(&helper::kv_line(term_w, "error", err.trim(), opts));
+    if snap.dirty {
+        out.push_str(&helper::kv_line(
+            term_w,
+            "dirty",
+            &helper::colorize(opts.use_color, "true", helper::AnsiColor::Red),
+            opts,
+        ));
         out.push('\n');
     }
 
-    if !run_list.is_empty() {
+    if let Some(e) = snap
+        .error
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        out.push_str(&helper::kv_line(term_w, "error", e, opts));
+        out.push('\n');
+    }
+
+    if !snap.runs.is_empty() {
         out.push_str(&helper::separator_line(term_w, opts));
         out.push('\n');
         out.push('\n');
     }
 
-    // RUN blocks
-    for ra in &run_list {
-        let outcome = run_outcome(ra);
-        let (alive, healthy) = latest_alive_healthy(&ra.states);
-
-        let alive_s = match &alive {
-            Some((_, true)) => helper::colorize(opts.use_color, "alive", helper::AnsiColor::Green),
-            Some((_, false)) => helper::colorize(opts.use_color, "dead", helper::AnsiColor::Red),
-            None => helper::colorize(opts.use_color, "unknown alive", helper::AnsiColor::Dim),
-        };
-        let healthy_s = match &healthy {
-            Some((_, true)) => {
-                helper::colorize(opts.use_color, "healthy", helper::AnsiColor::Green)
-            }
-            Some((_, false)) => {
-                helper::colorize(opts.use_color, "unhealthy", helper::AnsiColor::Red)
-            }
-            None => "healthy=?".to_string(),
+    for run in &snap.runs {
+        let enabled = if run.enabled {
+            helper::colorize(opts.use_color, "✓ enabled", helper::AnsiColor::Green)
+        } else {
+            helper::colorize(opts.use_color, "✗ disabled", helper::AnsiColor::Red)
         };
 
-        let status = match outcome {
+        let outcome_txt = match run.outcome {
             Outcome::Success => "✓ success",
             Outcome::Failed => "✗ failure",
             Outcome::Unknown => "? unknown",
         };
-        let status_colored = helper::colorize(opts.use_color, status, status_color(&outcome));
+        let outcome_colored =
+            helper::colorize(opts.use_color, outcome_txt, status_color(&run.outcome));
 
-        let enabled = match deployment.get_job_by_id(&ra.run_id) {
-            Some(job) => match job.enabled {
-                true => helper::colorize(opts.use_color, "✓ enabled", helper::AnsiColor::Green),
-                false => helper::colorize(opts.use_color, "✗ disabled", helper::AnsiColor::Red),
-            },
-            None => {
-                tracing::warn!("Job not found for run ID: {} in {}", ra.run_id, deployment);
-                continue;
-            }
+        let last = if run.last_update == 0 {
+            "-".to_string()
+        } else {
+            helper::format_time(run.last_update, opts.time_only)
         };
 
-        let last = helper::format_time(ra.last_time, opts.time_only);
-        let (steps_ok, steps_total, retry_count, undo_count) = step_stats(&ra.steps);
+        let (steps_ok, steps_total, max_attempts, undone_steps) = step_stats_from_snapshot(run);
 
         let mut run_info = format!(
-            "{}  {}   last update {}   steps {}/{}  max retry {}  undone {}",
-            &helper::bold(&ra.run_id),
+            "{}  {}   last update {}   steps {}/{}  max attempts {}  undone {}",
+            helper::bold(&run.run_id),
             enabled,
             last,
             steps_ok,
             steps_total,
-            retry_count,
-            undo_count
+            max_attempts,
+            undone_steps
         );
-        if let Some(e) = ra.run_report.as_ref().and_then(|r| r.error.as_ref()) {
+
+        if let Some(e) = run
+            .error
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             run_info.push_str(&format!("   err: {}", helper::single_line(e)));
         }
 
-        // Run line (own line, not table)
         out.push_str(&run_info);
         out.push('\n');
 
-        if healthy.is_some() || alive.is_some() {
+        if run.healthy.is_some() || run.alive.is_some() {
             out.push_str(&format!("  {}", helper::gray("observe")));
             out.push('\n');
         }
 
-        if let Some((s, _)) = healthy {
-            push_check_row(
+        if let Some(h) = &run.healthy {
+            let s = if h.ok { "healthy" } else { "unhealthy" };
+            let c = if h.ok {
+                helper::AnsiColor::Green
+            } else {
+                helper::AnsiColor::Red
+            };
+            push_check_row_snapshot(
                 &mut out,
                 &steps_table,
                 opts,
                 "[health]",
-                &healthy_s,
-                s.report_time,
-                s.log_tail,
+                &helper::colorize(opts.use_color, s, c),
+                h.report_time,
+                h.log_tail.as_deref().unwrap_or(""),
                 opts.show_logs_inline,
             );
         }
-        if let Some((s, _)) = alive {
-            push_check_row(
+
+        if let Some(a) = &run.alive {
+            let s = if a.ok { "alive" } else { "dead" };
+            let c = if a.ok {
+                helper::AnsiColor::Green
+            } else {
+                helper::AnsiColor::Red
+            };
+            push_check_row_snapshot(
                 &mut out,
                 &steps_table,
                 opts,
                 "[alive]",
-                &alive_s,
-                s.report_time,
-                s.log_tail,
+                &helper::colorize(opts.use_color, s, c),
+                a.report_time,
+                a.log_tail.as_deref().unwrap_or(""),
                 opts.show_logs_inline,
             );
         }
+
         out.push_str(&format!(
             "  {}    {}",
             helper::gray("steps"),
-            status_colored
+            outcome_colored
         ));
         out.push('\n');
 
-        // Steps table
-        // steps_table.header(&mut out, opts);
-
-        let mut attempt_map: HashMap<(String, bool), u32> = HashMap::new();
-        for s in &ra.steps {
-            let name = s.name.clone().unwrap_or_else(|| "step".into());
-            let key = (name.clone(), s.is_undo);
-            let next = attempt_map.get(&key).copied().unwrap_or(0) + 1;
-            attempt_map.insert(key, next);
-
-            let step_status = if s.success { "✓ ok" } else { "✗ fail" };
-            let step_status_colored = helper::colorize(
-                opts.use_color,
-                step_status,
-                if s.success {
-                    helper::AnsiColor::Green
-                } else {
-                    helper::AnsiColor::Red
-                },
-            );
-
-            let tt = helper::format_time(s.report_time, opts.time_only);
-
-            let mut sinfo = format!("attempt {}", next);
-            if let Some(ec) = s.exit_code {
-                sinfo.push_str(&format!("  exit {}", ec));
+        for st in &run.steps {
+            // undo rows: show only if defined in spec AND executed (attempt exists) OR state not Pending
+            if st.is_undo && (st.attempt.is_none() && st.state == StepState::Pending) {
+                continue;
             }
-            if s.is_undo {
-                sinfo.push_str("  undo");
+            if st.is_undo && !st.defined_in_spec {
+                // if you keep placeholder undo rows, don’t render them
+                continue;
             }
-            if let Some(e) = &s.error {
-                if !e.trim().is_empty() {
-                    sinfo.push_str(&format!("  err: {}", helper::single_line(e)));
+
+            let (status_str, status_color) = match st.state {
+                StepState::Pending => ("… pending", helper::AnsiColor::Dim),
+                StepState::Running => ("… running", helper::AnsiColor::Yellow),
+                StepState::Success => ("✓ ok", helper::AnsiColor::Green),
+                StepState::Failed => ("✗ fail", helper::AnsiColor::Red),
+                StepState::Skipped => ("↷ skipped", helper::AnsiColor::Dim),
+            };
+            let status_colored = helper::colorize(opts.use_color, status_str, status_color);
+
+            let time_s = st
+                .last_update
+                .map(|t| helper::format_time(t, opts.time_only))
+                .unwrap_or_else(|| "-".to_string());
+
+            let mut info = String::new();
+            if let Some(a) = &st.attempt {
+                info.push_str(&format!("attempt {}", a.n));
+                if let Some(ec) = a.exit_code {
+                    info.push_str(&format!("  exit {}", ec));
+                }
+                if st.is_undo {
+                    info.push_str("  undo");
+                }
+                if let Some(e) = a.error.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    info.push_str(&format!("  err: {}", helper::single_line(e)));
+                }
+            } else {
+                info.push_str("not started");
+                if st.is_undo {
+                    info.push_str("  undo");
                 }
             }
+
+            let name = if st.is_undo {
+                format!("{} (undo)", st.name)
+            } else {
+                st.name.clone()
+            };
 
             steps_table.row(
                 &mut out,
                 &[
                     "",
-                    &format!(
-                        "  {}",
-                        helper::bold(&name) + if s.is_undo { " (undo)" } else { "" }
-                    ),
-                    &step_status_colored,
-                    &tt,
-                    &sinfo,
+                    &format!("  {}", helper::bold(&name)),
+                    &status_colored,
+                    &time_s,
+                    &info,
                 ],
                 opts,
             );
 
-            if opts.show_logs_inline && !s.log_tail.trim().is_empty() {
-                let whitespace = format!(
-                    "{}{}",
-                    steps_table.get_column_width_as_whitespace(0),
-                    steps_table.get_column_width_as_whitespace(1)
-                );
-
-                out.push_str(&format!(
-                    "{}{}",
-                    whitespace,
-                    helper::gray(&s.log_tail.replace("\n", &format!("\n{}", whitespace)))
-                ));
-                out.push('\n');
-                // let hint = helper::log_hint(&s.log_tail, opts.max_log_hint);
-                // steps_table.row(&mut out, &["    log tail", "", "", &hint], opts);
+            if opts.show_logs_inline {
+                if let Some(a) = &st.attempt {
+                    if let Some(tail) = a
+                        .log_tail
+                        .as_ref()
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        let whitespace = format!(
+                            "{}{}",
+                            steps_table.get_column_width_as_whitespace(0),
+                            steps_table.get_column_width_as_whitespace(1)
+                        );
+                        out.push_str(&format!(
+                            "{} {}",
+                            whitespace,
+                            helper::gray(&tail.replace('\n', &format!("\n{}", whitespace)))
+                        ));
+                        out.push('\n');
+                    }
+                }
             }
         }
 
@@ -439,122 +329,96 @@ pub fn print_deployment_reports(
         out.push('\n');
     }
 
-    if let Some(rb) = rollback {
-        // Rollback section
-        rb_table.header(&mut out, opts);
-        let st = if rb.success {
-            "✓ success"
-        } else {
-            "✗ failure"
-        };
-        let st = helper::colorize(
-            opts.use_color,
-            st,
-            if rb.success {
-                helper::AnsiColor::Green
-            } else {
-                helper::AnsiColor::Red
-            },
-        );
+    if let Some(rb) = &snap.rollback {
+        out.push('\n');
+        out.push_str(&helper::kv_line(
+            term_w,
+            "rollback",
+            &format!(
+                "new revision {}",
+                helper::bold(&rb.new_revision_id.clone().unwrap_or("None".to_string()))
+            ),
+            opts,
+        ));
+        out.push('\n');
 
-        let t = ""; // if you have a rollback time later, put it here
-        let mut info = format!("undone_steps={:?}", rb.undone_steps);
-        if let Some(e) = rb.error.as_ref() {
-            info.push_str(&format!("  err: {}", helper::single_line(e)));
-        }
-        if !rb.log_tail.trim().is_empty() {
-            info.push_str(&format!(
-                "  log: {}",
-                helper::log_hint(&rb.log_tail, opts.max_log_hint)
+        if let Some(t) = rb.report_time {
+            out.push_str(&helper::kv_line(
+                term_w,
+                "time",
+                &helper::format_time(t, opts.time_only),
+                opts,
             ));
+            out.push('\n');
         }
-
-        rb_table.row(&mut out, &["rollback", &st, t, &info], opts);
     }
 
     tracing::info!("{out}");
 }
 
-fn run_outcome(ra: &RunAgg) -> Outcome {
-    if let Some(rr) = &ra.run_report {
-        return rr.outcome.clone();
-    }
-    if ra.steps.iter().any(|s| !s.success) {
-        return Outcome::Failed;
-    }
-    Outcome::Unknown
-}
+// counts ok/total over main steps, and includes undo steps only if executed
+fn step_stats_from_snapshot(run: &RunStatus) -> (usize, usize, usize, usize) {
+    let mut ok = 0usize;
+    let mut total = 0usize;
+    let mut max_attempts = 0usize;
 
-fn outcome_rank(o: Outcome) -> u8 {
-    match o {
-        Outcome::Failed => 0,
-        Outcome::Unknown => 1,
-        Outcome::Success => 2,
-    }
-}
-
-fn latest_alive_healthy(
-    states: &[RunState],
-) -> (Option<(RunState, bool)>, Option<(RunState, bool)>) {
-    let mut alive: Option<(u64, bool, RunState)> = None;
-    let mut healthy: Option<(u64, bool, RunState)> = None;
-
-    for s in states {
-        if let Some(a) = s.alive {
-            if alive
-                .as_ref()
-                .map(|(t, _, _)| s.report_time >= *t)
-                .unwrap_or(true)
-            {
-                alive = Some((s.report_time, a, s.clone()));
-            }
-        }
-        if let Some(h) = s.healthy {
-            if healthy
-                .as_ref()
-                .map(|(t, _, _)| s.report_time >= *t)
-                .unwrap_or(true)
-            {
-                healthy = Some((s.report_time, h, s.clone()));
-            }
-        }
-    }
-
-    (
-        alive.map(|(_, v, s)| (s, v)),
-        healthy.map(|(_, v, s)| (s, v)),
-    )
-}
-
-fn step_stats(steps: &[StepReport]) -> (u32, u32, u32, u32) {
-    let mut total = 0u32;
-    let mut ok = 0u32;
-    let mut undo = 0u32;
-
-    let mut seen: HashMap<String, u32> = HashMap::new();
-    let mut retries = 0u32;
-
-    for s in steps {
-        if s.is_undo {
-            undo += 1;
-            continue;
-        }
+    // main steps are expected
+    for s in run.steps.iter().filter(|s| !s.is_undo) {
         total += 1;
-        if s.success {
+        if s.state == StepState::Success {
             ok += 1;
         }
-        let name = s.name.clone().unwrap_or_else(|| "step".into());
-        let c = seen.get(&name).copied().unwrap_or(0) + 1;
-        seen.insert(name, c);
+        max_attempts = max_attempts.max(s.attempts_total as usize);
     }
 
-    for (_k, c) in seen {
-        if c > 1 {
-            retries += c - 1;
+    // undo: count only if executed (attempt exists)
+    let mut undone = 0usize;
+    for s in run.steps.iter().filter(|s| s.is_undo) {
+        if s.attempt.is_some() {
+            undone += 1;
+            total += 1;
+            if s.state == StepState::Success {
+                ok += 1;
+            }
+            max_attempts = max_attempts.max(s.attempts_total as usize);
         }
     }
 
-    (ok, total, retries, undo)
+    (ok, total, max_attempts, undone)
+}
+
+// Same formatting as your old `push_check_row`, but driven by snapshot.
+fn push_check_row_snapshot(
+    out: &mut String,
+    table: &helper::Table,
+    opts: &helper::RenderOpts,
+    label: &str,
+    status: &str,
+    report_time: u64,
+    log_tail: &str,
+    show_logs_inline: bool,
+) {
+    let tt = helper::format_time(report_time, opts.time_only);
+
+    table.row(
+        out,
+        &["", &format!("  {}", helper::bold(label)), status, &tt, ""],
+        opts,
+    );
+
+    if show_logs_inline && !log_tail.trim().is_empty() {
+        let whitespace = format!(
+            "{}{}",
+            table.get_column_width_as_whitespace(0),
+            table.get_column_width_as_whitespace(1)
+        );
+        out.push_str(&format!(
+            "{}{}",
+            whitespace,
+            helper::gray(&log_tail.replace('\n', &format!("\n{}", whitespace)))
+        ));
+        out.push('\n');
+    }
 }
 
 fn status_color(o: &Outcome) -> helper::AnsiColor {
@@ -570,53 +434,5 @@ fn glyph_for_outcome(o: &Outcome) -> &'static str {
         Outcome::Success => "✓",
         Outcome::Failed => "✗",
         Outcome::Unknown => "?",
-    }
-}
-
-fn best_updated_time(run_list: &[RunAgg], reports: &[DeployReport]) -> u64 {
-    let mut t = 0u64;
-    for r in run_list {
-        t = t.max(r.last_time);
-    }
-    if t == 0 {
-        for r in reports {
-            t = t.max(r.created_at);
-        }
-    }
-    t
-}
-
-fn push_check_row<'a>(
-    out: &mut String,
-    steps_table: &helper::Table,
-    opts: &helper::RenderOpts,
-    label: &'a str,           // "[health]" / "[alive]"
-    status_label: &'a str,    // status from state
-    ts: u64,                  // report_time
-    log_tail: Option<String>, // optional multi-line log
-    show_log: bool,
-) {
-    let tt = helper::format_time(ts, opts.time_only);
-
-    steps_table.row(out, &["", label, status_label, &tt], opts);
-
-    if show_log && let Some(tail) = log_tail {
-        // if is empty write "no logs gathered"
-        let logs = match tail.trim().is_empty() {
-            true => "No logs gathered".to_string(),
-            false => tail.clone(),
-        };
-        let whitespace = format!(
-            "{}{}",
-            steps_table.get_column_width_as_whitespace(0),
-            steps_table.get_column_width_as_whitespace(1)
-        );
-
-        out.push_str(&format!(
-            "{}{}",
-            whitespace,
-            helper::gray(&logs.replace("\n", &format!("\n{}", whitespace)))
-        ));
-        out.push('\n');
     }
 }

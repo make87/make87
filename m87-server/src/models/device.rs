@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use m87_shared::deploy_spec::{DeploymentRevision, build_instruction_hash};
+use m87_shared::deploy_spec::{DeployReportKind, DeploymentRevision, build_instruction_hash};
 use m87_shared::device::DeviceStatus;
 use mongodb::bson::{DateTime, Document, doc, oid::ObjectId};
 
@@ -14,6 +14,7 @@ pub use m87_shared::device::{DeviceSystemInfo, PublicDevice, short_device_id};
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
 
 use crate::config::AppConfig;
+use crate::models::audit_logs::AuditLogDoc;
 use crate::models::deploy_spec::{CreateDeployReportBody, DeployReportDoc, DeployRevisionDoc};
 use crate::{
     auth::{access_control::AccessControlled, claims::Claims},
@@ -202,7 +203,7 @@ impl DeviceDoc {
 
     pub async fn handle_heartbeat(
         &self,
-        _claims: Claims,
+        claims: Claims,
         db: &Arc<Mongo>,
         payload: HeartbeatRequest,
         config: &Arc<AppConfig>,
@@ -235,7 +236,7 @@ impl DeviceDoc {
             let body = CreateDeployReportBody {
                 device_id: self.id.clone().unwrap(),
                 revision_id: deploy_report.get_revision_id().to_string(),
-                kind: deploy_report,
+                kind: deploy_report.clone(),
                 expires_at: Some(DateTime::from_system_time(
                     SystemTime::now()
                         + Duration::from_hours(24 * config.report_retention_days as u64),
@@ -244,6 +245,46 @@ impl DeviceDoc {
             let res = DeployReportDoc::create_or_update(db, body).await;
             if let Err(err) = res {
                 tracing::error!("Failed to create deploy report: {}", err);
+            }
+
+            if let DeployReportKind::RollbackReport(rollback) = deploy_report {
+                // change active deplotment to rollback.new_revision_id
+                let device_oid = self.id.clone().unwrap();
+                let out = DeployRevisionDoc::get_active_device_deployment(&db, device_oid.clone())
+                    .await?;
+
+                if let Some(new_id) = &rollback.new_revision_id {
+                    let _ = db
+                        .deploy_revisions()
+                        .update_one(
+                            doc! { "revision.id": new_id, "device_id": &device_oid },
+                            doc! { "$set": { "active": true } },
+                        )
+                        .await?;
+                }
+
+                match out {
+                    Some(doc) => {
+                        let filter = doc! { "revision.id": &doc.id, "device_id": &device_oid };
+                        let update_doc = doc! { "active": false };
+                        let _ = db.deploy_revisions().update_one(filter, update_doc).await?;
+                    }
+                    None => {}
+                };
+
+                let _ = AuditLogDoc::add(
+                    &db,
+                    &claims,
+                    &config,
+                    &format!(
+                        "Rolled back deployment to {} for device {}",
+                        &rollback.new_revision_id.unwrap_or("None".to_string()),
+                        &device_oid
+                    ),
+                    "",
+                    Some(device_oid.clone()),
+                )
+                .await;
             }
         }
 

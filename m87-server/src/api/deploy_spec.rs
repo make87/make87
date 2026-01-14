@@ -2,7 +2,8 @@ use axum::extract::{Path, State};
 use axum::routing::get;
 use axum::{Json, Router};
 use m87_shared::deploy_spec::{
-    CreateDeployRevisionBody, DeployReport, DeploymentRevision, UpdateDeployRevisionBody,
+    CreateDeployRevisionBody, DeployReport, DeploymentRevision, DeploymentStatusSnapshot,
+    UpdateDeployRevisionBody,
 };
 use mongodb::bson::{doc, oid::ObjectId};
 
@@ -37,6 +38,11 @@ pub fn create_route() -> Router<AppState> {
         .route(
             "/{device_id}/revisions/{revision_id}/reports",
             get(list_device_revision_reports),
+        )
+        //get deployment snapshot
+        .route(
+            "/{device_id}/revisions/{revision_id}/snapshot",
+            get(get_device_revision_snapshot),
         )
 }
 
@@ -367,5 +373,34 @@ async fn list_device_revision_reports(
             offset: pagination.offset,
             limit: pagination.limit,
         })
+        .build())
+}
+
+async fn get_device_revision_snapshot(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path((device_id, revision_id)): Path<(String, String)>,
+) -> ServerAppResult<DeploymentStatusSnapshot> {
+    let device_oid = ObjectId::parse_str(&device_id)
+        .map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
+
+    // Ensure caller can access the device
+    let dev_opt = claims
+        .find_one_with_access(&state.db.devices(), doc! { "_id": &device_oid })
+        .await?;
+    if dev_opt.is_none() {
+        return Err(ServerError::not_found("Device not found"));
+    }
+
+    let snapshot = DeployReportDoc::compute_deployment_status_snapshot_for_device(
+        &state.db,
+        &device_oid,
+        &revision_id,
+    )
+    .await?;
+
+    Ok(ServerResponse::builder()
+        .body(snapshot)
+        .status_code(axum::http::StatusCode::OK)
         .build())
 }

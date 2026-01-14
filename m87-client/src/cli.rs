@@ -926,22 +926,13 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
                         }
                     },
                 };
-                let reports =
-                    device::deploy::get_deployment_reports(&device, &deployment_id).await?;
+                let snapshot =
+                    device::deploy::get_deployment_snapshot(&device, &deployment_id).await?;
 
-                let deployment = match device::deploy::get_deployment(&device, &deployment_id).await
-                {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::error!("Failed to get deployment: {}", e);
-                        return Ok(());
-                    }
-                };
-                println!("len reports {}", reports.len());
                 tracing::info!("[done] Received deployment reports");
                 let mut config = tui::helper::RenderOpts::default();
                 config.show_logs_inline = logs;
-                tui::deploy::print_deployment_reports(&reports, &deployment, &config);
+                tui::deploy::print_deployment_status_snapshot(&snapshot, &config);
                 Ok(())
             }
 

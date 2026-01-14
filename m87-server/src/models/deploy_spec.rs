@@ -1,9 +1,14 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use futures::TryStreamExt;
 use m87_shared::{
     deploy_spec::{
-        DeployReport, DeployReportKind, DeploymentRevision, RunSpec, UpdateDeployRevisionBody,
+        DeployReport, DeployReportKind, DeploymentRevision, DeploymentStatusSnapshot, ObserveKind,
+        ObserveStatusItem, Outcome, RollbackStatus, RunSpec, RunStatus, StepAttemptStatus,
+        StepState, StepStatus, UpdateDeployRevisionBody,
     },
     device::ObserveStatus,
 };
@@ -12,7 +17,6 @@ use mongodb::{
     options::FindOptions,
 };
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamExt;
 
 use crate::{
     auth::access_control::AccessControlled,
@@ -348,8 +352,8 @@ impl DeployReportDoc {
         let mut latest_alive: BTreeMap<String, u64> = BTreeMap::new();
         let mut latest_healthy: BTreeMap<String, u64> = BTreeMap::new();
         //
-        while let Some(res) = cursor.next().await {
-            if let Ok(doc) = res {
+        while let Ok(res) = cursor.try_next().await {
+            if let Some(doc) = res {
                 // get kind for each RunState. for each run id create a new Observe status.
                 // Use the latest time to set the current health and alive value and count total unhealthy and livelyness false
                 //
@@ -410,8 +414,6 @@ impl DeployReportDoc {
                         }
                     }
                 }
-            } else if let Err(e) = res {
-                tracing::error!("Failed to create or update deploy report: {:?}", e);
             }
         }
 
@@ -515,5 +517,295 @@ impl DeployReportDoc {
             .await
             .map_err(|_| ServerError::internal_error("Cursor decode failed"))?;
         Ok(results)
+    }
+
+    pub async fn compute_deployment_status_snapshot_for_device(
+        db: &Arc<Mongo>,
+        device_id: &ObjectId,
+        revision_id: &str,
+    ) -> ServerResult<DeploymentStatusSnapshot> {
+        // 1) Pre-build runs/steps from spec using Vec indexing only.
+        // Keep a *small* run_id -> run_idx map (jobs count is small; this is not the memory problem).
+        let deployment_doc = db
+            .deploy_revisions()
+            .find_one(doc! { "revision.id": revision_id, "device_id": device_id})
+            .await?
+            .ok_or(ServerError::not_found("Deployment not found"))?;
+        let deployment = deployment_doc.revision;
+        let mut runs: Vec<RunStatus> = Vec::with_capacity(deployment.jobs.len());
+        let mut run_id_to_idx: HashMap<String, usize> =
+            HashMap::with_capacity(deployment.jobs.len());
+
+        for (ri, job) in deployment.jobs.iter().enumerate() {
+            run_id_to_idx.insert(job.id.clone(), ri);
+
+            let mut steps: Vec<StepStatus> = Vec::with_capacity(step_slots(job));
+            for (i, st) in job.steps.iter().enumerate() {
+                let name = st.name.clone().unwrap_or_else(|| format!("step {}", i + 1));
+                // main row
+                steps.push(StepStatus {
+                    step_id: step_id(&job.id, i, false),
+                    name: name.clone(),
+                    is_undo: false,
+                    defined_in_spec: true,
+                    state: StepState::Pending,
+                    last_update: None,
+                    attempt: None,
+                    attempts_total: 0,
+                    exit_code: None,
+                    error: None,
+                });
+                // undo row (allocated but “expected” only if undo exists)
+                steps.push(StepStatus {
+                    step_id: step_id(&job.id, i, true),
+                    name,
+                    is_undo: true,
+                    defined_in_spec: st.undo.is_some(),
+                    state: StepState::Pending,
+                    last_update: None,
+                    attempt: None,
+                    attempts_total: 0,
+                    exit_code: None,
+                    error: None,
+                });
+            }
+
+            runs.push(RunStatus {
+                run_id: job.id.clone(),
+                enabled: job.enabled,
+                run_type: job.run_type.clone(),
+                outcome: Outcome::Unknown,
+                last_update: 0,
+                error: None,
+                alive: None,
+                healthy: None,
+                steps,
+            });
+        }
+
+        // 2) Query Mongo with a cursor; stream docs and update snapshot in place.
+        // Sort by report_time ascending so “latest” comparisons are cheap and predictable.
+        let options = FindOptions::builder()
+            .sort(doc! { "report_time": 1i32 })
+            .batch_size(Some(256))
+            .build();
+
+        let mut cursor = db
+            .deploy_reports()
+            .find(doc! { "device_id": device_id, "revision_id": revision_id })
+            .with_options(options)
+            .await?;
+
+        // Top-level revision fields
+        let mut dirty = false;
+        let mut rev_error: Option<String> = None;
+        let mut rev_outcome = Outcome::Unknown;
+        let mut rollback: Option<RollbackStatus> = None;
+
+        while let Some(doc) = cursor
+            .try_next()
+            .await
+            .map_err(|_| ServerError::internal_error("Cursor decode failed"))?
+        {
+            let r = doc.to_pub_report();
+
+            match r.kind {
+                DeployReportKind::DeploymentRevisionReport(x) => {
+                    dirty = x.dirty;
+                    rev_error = x
+                        .error
+                        .map(|e| e.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    rev_outcome = x.outcome;
+                }
+                DeployReportKind::RollbackReport(x) => {
+                    rollback = Some(RollbackStatus {
+                        new_revision_id: x.new_revision_id,
+                        report_time: None,
+                    });
+                }
+                DeployReportKind::RunReport(x) => {
+                    if let Some(&ri) = run_id_to_idx.get(&x.run_id) {
+                        let run = &mut runs[ri];
+                        let t = x.report_time as u64;
+                        run.last_update = run.last_update.max(t);
+                        if let Some(e) =
+                            x.error.as_ref().map(|e| e.trim()).filter(|s| !s.is_empty())
+                        {
+                            run.error = Some(e.to_string());
+                        }
+                    }
+                }
+                DeployReportKind::RunState(x) => {
+                    if let Some(&ri) = run_id_to_idx.get(&x.run_id) {
+                        let run = &mut runs[ri];
+                        let t = x.report_time as u64;
+                        run.last_update = run.last_update.max(t);
+
+                        // Update alive/healthy with latest only; no per-run Vec<RunState>.
+                        // Adapt these fields to your RunState shape.
+                        if let Some((kind, ok, log_tail)) = x.as_observe_update() {
+                            let item = ObserveStatusItem {
+                                report_time: t,
+                                ok,
+                                log_tail,
+                            };
+                            match kind {
+                                ObserveKind::Alive => {
+                                    if run.alive.as_ref().map(|a| a.report_time).unwrap_or(0) <= t {
+                                        run.alive = Some(item);
+                                    }
+                                }
+                                ObserveKind::Healthy => {
+                                    if run.healthy.as_ref().map(|a| a.report_time).unwrap_or(0) <= t
+                                    {
+                                        run.healthy = Some(item);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                DeployReportKind::StepReport(s) => {
+                    if let Some(&ri) = run_id_to_idx.get(&s.run_id) {
+                        let run = &mut runs[ri];
+                        let t = s.report_time as u64;
+                        run.last_update = run.last_update.max(t);
+                        let job = deployment.get_job_by_id(&s.run_id);
+                        if job.is_none() {
+                            continue;
+                        }
+                        let job = job.unwrap();
+                        let idx = job.steps.iter().position(|step| step.name == s.name);
+                        if idx.is_none() {
+                            continue;
+                        }
+                        let idx = idx.unwrap();
+
+                        // Critical: use step_index from the report (store it in DB).
+                        let idx = idx as usize;
+                        let slot = if s.is_undo {
+                            undo_slot(idx)
+                        } else {
+                            main_slot(idx)
+                        };
+                        if slot >= run.steps.len() {
+                            continue;
+                        }
+
+                        let st = &mut run.steps[slot];
+                        st.attempts_total = st.attempts_total.max(s.attempts);
+                        st.exit_code = s.exit_code;
+                        st.error = s
+                            .error
+                            .as_ref()
+                            .map(|e| e.trim().to_string())
+                            .filter(|x| !x.is_empty());
+                        st.last_update = Some(st.last_update.unwrap_or(0).max(t));
+                        st.state = if s.success {
+                            StepState::Success
+                        } else {
+                            StepState::Failed
+                        };
+
+                        let attempt = StepAttemptStatus {
+                            n: s.attempts,
+                            report_time: t,
+                            success: s.success,
+                            exit_code: s.exit_code,
+                            error: s
+                                .error
+                                .as_ref()
+                                .map(|e| e.trim().to_string())
+                                .filter(|x| !x.is_empty()),
+                            log_tail: Some(s.log_tail.clone()),
+                        };
+
+                        if st.attempt.as_ref().map(|a| a.report_time).unwrap_or(0) <= t {
+                            st.attempt = Some(attempt);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3) Derive run outcomes without building any more maps.
+        for run in &mut runs {
+            if run.error.is_some() {
+                run.outcome = Outcome::Failed;
+                continue;
+            }
+            run.outcome = outcome_from_steps(&run.steps);
+        }
+
+        // 4) Derive overall outcome.
+        let outcome = if rev_outcome != Outcome::Unknown {
+            rev_outcome
+        } else if runs.iter().any(|r| r.outcome == Outcome::Failed) {
+            Outcome::Failed
+        } else if runs.iter().any(|r| r.outcome == Outcome::Unknown) {
+            Outcome::Unknown
+        } else if runs.iter().any(|r| r.outcome == Outcome::Success) {
+            Outcome::Success
+        } else {
+            Outcome::Unknown
+        };
+
+        Ok(DeploymentStatusSnapshot {
+            revision_id: revision_id.to_string(),
+            outcome,
+            dirty,
+            error: rev_error,
+            rollback,
+            runs,
+        })
+    }
+}
+
+fn undo_slot(step_index: usize) -> usize {
+    step_index * 2 + 1
+}
+fn main_slot(step_index: usize) -> usize {
+    step_index * 2
+}
+
+fn step_slots(job: &RunSpec) -> usize {
+    // allocate 2 per step (main + undo) to allow O(1) indexing;
+    // you can still hide undo in rendering if never executed.
+    job.steps.len() * 2
+}
+
+fn step_id(run_id: &str, idx: usize, is_undo: bool) -> String {
+    if is_undo {
+        format!("{run_id}:{idx}:undo")
+    } else {
+        format!("{run_id}:{idx}")
+    }
+}
+
+fn outcome_from_steps(steps: &[StepStatus]) -> Outcome {
+    // Only consider non-undo steps as "expected" for outcome; undo is remedial.
+    let mut any_failed = false;
+    let mut any_success = false;
+    let mut any_pending = false;
+
+    for s in steps.iter().filter(|s| !s.is_undo) {
+        match s.state {
+            StepState::Failed => any_failed = true,
+            StepState::Success => any_success = true,
+            StepState::Pending => any_pending = true,
+            StepState::Running => {}
+            StepState::Skipped => {}
+        }
+    }
+
+    if any_failed {
+        Outcome::Failed
+    } else if any_pending {
+        Outcome::Unknown
+    } else if any_success {
+        Outcome::Success
+    } else {
+        Outcome::Unknown
     }
 }

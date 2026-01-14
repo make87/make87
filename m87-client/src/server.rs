@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use m87_shared::deploy_spec::{
-    CreateDeployRevisionBody, DeployReport, DeploymentRevision, UpdateDeployRevisionBody,
+    CreateDeployRevisionBody, DeployReport, DeploymentRevision, DeploymentStatusSnapshot,
+    UpdateDeployRevisionBody,
 };
 use m87_shared::device::{AuditLog, DeviceStatus, UpdateDeviceBody};
 use reqwest::Client;
@@ -471,6 +472,27 @@ pub async fn get_deployment_reports(
 ) -> Result<Vec<DeployReport>> {
     let url = format!(
         "{}/device/{}/revisions/{}/reports",
+        api_url, device_id, deployment_id
+    );
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn get_device_revision_snapshot(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    device_id: &str,
+    deployment_id: &str,
+) -> Result<DeploymentStatusSnapshot> {
+    let url = format!(
+        "{}/device/{}/revisions/{}/snapshot",
         api_url, device_id, deployment_id
     );
     let client = get_client(trust_invalid_server_cert)?;
