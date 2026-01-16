@@ -22,7 +22,7 @@ use crate::{
     api::{
         auth,
         certificate::{create_tls_config, update_cert},
-        device,
+        device, org,
         quic::run_quic_endpoint,
         web_transport::run_webtransport,
     },
@@ -73,6 +73,7 @@ pub async fn serve(
     let app = Router::new()
         .nest("/auth", auth::create_route())
         .nest("/device", device::create_route())
+        .nest("/organization", org::create_route())
         .nest("/admin", admin)
         .route("/status", get(get_status))
         .layer(cors)

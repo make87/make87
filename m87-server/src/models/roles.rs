@@ -1,10 +1,11 @@
 use crate::{
     db::Mongo,
+    models::{org, user::UserDoc},
     response::{ServerError, ServerResult},
 };
 use futures::StreamExt;
 use mongodb::{
-    bson::{doc, oid::ObjectId, Bson, DateTime},
+    bson::{Bson, DateTime, doc, oid::ObjectId},
     options::{FindOneAndUpdateOptions, ReturnDocument},
 };
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ pub struct RoleDoc {
     /// API key id or jwt user sub
     pub reference_id: String,
 
-    /// Scope identifier: "nexus:*", "org:<id>", "user:<reference_id>"
+    /// Scope identifier: "org:<id>", "user:<reference_id>"
     pub scope: String,
 
     pub role: Role,
@@ -127,5 +128,13 @@ impl RoleDoc {
             .await
             .map_err(|_| ServerError::internal_error("Failed to delete role binding"))?;
         Ok(())
+    }
+}
+
+pub fn reference_id_for_subject(email_or_org_id: &str) -> String {
+    if email_or_org_id.contains('@') {
+        UserDoc::create_reference_id(email_or_org_id)
+    } else {
+        org::org_ref(email_or_org_id)
     }
 }

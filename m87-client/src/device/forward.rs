@@ -19,7 +19,7 @@ use tracing::{debug, error, info, warn};
 
 pub async fn open_local_forward(device_name: &str, forward_specs: Vec<String>) -> Result<()> {
     let config = Config::load()?;
-    let resolved = devices::resolve_device_short_id_cached(device_name).await?;
+    let resolved = devices::resolve_device_cached(device_name).await?;
     let token = AuthManager::get_cli_token().await?;
     let trust = config.trust_invalid_server_cert;
 
@@ -110,7 +110,7 @@ async fn forward_device_port_tcp(
     debug!("QUIC connection established, entering accept loop");
 
     info!(
-        "[done] TCP forward: 127.0.0.1:{} → {}/{}:{}",
+        "TCP forward: 127.0.0.1:{} → {}/{}:{}",
         &forward_spec.local_port, device_short_id, remote_host, &forward_spec.remote_port
     );
     loop {
@@ -177,7 +177,7 @@ async fn forward_device_port_udp(
     quic_io.send.finish()?;
 
     info!(
-        "[done] UDP forward: 127.0.0.1:{} → {} {}:{}",
+        "UDP forward: 127.0.0.1:{} → {} {}:{}",
         &forward_spec.local_port,
         device_short_id,
         &forward_spec.remote_host,
@@ -304,7 +304,7 @@ async fn forward_device_socket(
 
     let listener = UnixListener::bind(local_path)?;
     info!(
-        "[done] Socket forward: local {} → {} {}",
+        "Socket forward: local {} → {} {}",
         local_path, device_short_id, target.remote_path
     );
 

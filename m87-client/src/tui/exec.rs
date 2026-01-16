@@ -29,7 +29,7 @@ pub async fn run_exec(device: &str, command: Vec<String>, stdin: bool, tty: bool
 
     let config = Config::load()?;
 
-    let resolved = devices::resolve_device_short_id_cached(device).await?;
+    let resolved = devices::resolve_device_cached(device).await?;
 
     let token = AuthManager::get_cli_token().await?;
 
@@ -45,7 +45,7 @@ pub async fn run_exec(device: &str, command: Vec<String>, stdin: bool, tty: bool
     )
     .await
     .context("Failed to connect to RAW metrics stream")?;
-    tracing::info!("[done] Connected to device");
+    tracing::info!("Connected to device");
 
     // Join command into single string (shell will interpret operators like && |)
     let cmd_str = command.join(" ");

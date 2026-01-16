@@ -439,12 +439,7 @@ async fn resolve_request_server(request_id: &str) -> Result<(String, server::Dev
     })
     .await?;
 
-    found.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Auth request '{}' not found on any server",
-            request_id
-        )
-    })
+    found.ok_or_else(|| anyhow::anyhow!("Auth request '{}' not found on any server", request_id))
 }
 
 #[cfg(test)]

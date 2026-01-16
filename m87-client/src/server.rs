@@ -3,7 +3,13 @@ use m87_shared::deploy_spec::{
     CreateDeployRevisionBody, DeployReport, DeploymentRevision, DeploymentStatusSnapshot,
     UpdateDeployRevisionBody,
 };
-use m87_shared::device::{AuditLog, DeviceStatus, UpdateDeviceBody};
+use m87_shared::device::{AddDeviceAccessBody, AuditLog, DeviceStatus, UpdateDeviceBody};
+use m87_shared::org::{
+    AcceptRejectBody, AddDeviceBody, CreateOrganizationBody, Invite, InviteMemberBody,
+    Organization, UpdateOrganizationBody,
+};
+use m87_shared::roles::Role;
+use m87_shared::users::User;
 use reqwest::Client;
 
 use tracing::error;
@@ -526,6 +532,343 @@ pub async fn get_device_audit_logs(
     }
 
     let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).query(&q).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn get_device_users(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    device_id: &str,
+) -> Result<Vec<User>> {
+    let url = format!("{}/device/{}/users", api_url, device_id);
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn remove_device_access(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    device_id: &str,
+    email_or_org_id: &str,
+) -> Result<()> {
+    let url = format!(
+        "{}/device/{}/access/{}",
+        api_url, device_id, email_or_org_id
+    );
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let res = retry_async!(3, 3, client.delete(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn add_device_access(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    device_id: &str,
+    email_or_org_id: &str,
+    role: Role,
+) -> Result<()> {
+    let url = format!("{}/device/{}/access", api_url, device_id);
+    let client = get_client(trust_invalid_server_cert)?;
+    let body = AddDeviceAccessBody {
+        email_or_org_id: email_or_org_id.to_string(),
+        role,
+    };
+
+    let res = retry_async!(
+        3,
+        3,
+        client.post(&url).bearer_auth(token).json(&body).send()
+    )?;
+
+    match res.error_for_status() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn update_device_access(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    device_id: &str,
+    email_or_org_id: &str,
+    role: Role,
+) -> Result<()> {
+    let url = format!(
+        "{}/device/{}/access/{}",
+        api_url, device_id, email_or_org_id
+    );
+    let client = get_client(trust_invalid_server_cert)?;
+    let body = AddDeviceAccessBody {
+        email_or_org_id: email_or_org_id.to_string(),
+        role,
+    };
+
+    let res = retry_async!(3, 3, client.put(&url).bearer_auth(token).json(&body).send())?;
+
+    match res.error_for_status() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn list_organizations(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+) -> Result<Vec<Organization>> {
+    let url = format!("{}/organization", api_url);
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn create_organization(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    id: &str,
+    owner_email: &str,
+) -> Result<()> {
+    let url = format!("{}/organization", api_url);
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let body = CreateOrganizationBody {
+        id: id.to_string(),
+        owner_email: owner_email.to_string(),
+    };
+
+    let res = retry_async!(
+        3,
+        3,
+        client.post(&url).bearer_auth(token).json(&body).send()
+    )?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn delete_organization(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    id: &str,
+) -> Result<()> {
+    let url = format!("{}/organization/{}", api_url, id);
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let res = retry_async!(3, 3, client.delete(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn update_organization(
+    api_url: &str,
+    token: &str,
+    trust_invalid_server_cert: bool,
+    id: &str,
+    new_id: &str,
+) -> Result<Organization> {
+    let url = format!("{}/organization/{}", api_url, id);
+    let client = get_client(trust_invalid_server_cert)?;
+
+    let body = UpdateOrganizationBody {
+        new_id: new_id.to_string(),
+    };
+
+    let res = retry_async!(3, 3, client.put(&url).bearer_auth(token).json(&body).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn list_organization_members(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+    org_id: String,
+) -> Result<Vec<User>> {
+    let url = format!("{}/organization/{}/members", server_url, org_id);
+    let client = get_client(trust)?;
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn add_organization_member(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+    org_id: String,
+    email: String,
+    role: Role,
+) -> Result<()> {
+    let url = format!("{}/organization/{}/members", server_url, org_id);
+    let client = get_client(trust)?;
+
+    let body = InviteMemberBody { email, role };
+    let res = retry_async!(
+        3,
+        3,
+        client.post(&url).bearer_auth(token).json(&body).send()
+    )?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn remove_organization_member(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+    org_id: String,
+    user_id: String,
+) -> Result<()> {
+    let url = format!("{}/organization/{}/members/{}", server_url, org_id, user_id);
+    let client = get_client(trust)?;
+
+    let res = retry_async!(3, 3, client.delete(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn list_organization_invites(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+) -> Result<Vec<Invite>> {
+    let url = format!("{}/invites", server_url);
+    let client = get_client(trust)?;
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn handle_organization_invite(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+    invite_id: &str,
+    accept: bool,
+) -> Result<String> {
+    let url = format!("{}/invites/{}", server_url, invite_id);
+    let client = get_client(trust)?;
+    let body = AcceptRejectBody {
+        invite_id: invite_id.to_string(),
+        accepted: accept,
+    };
+    let res = retry_async!(
+        3,
+        3,
+        client.post(&url).bearer_auth(token).json(&body).send()
+    )?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.text().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn list_org_devices(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+    org_id: &str,
+) -> Result<Vec<PublicDevice>> {
+    let url = format!("{}/organization/{}/devices", server_url, org_id);
+    let client = get_client(trust)?;
+
+    let res = retry_async!(3, 3, client.get(&url).bearer_auth(token).send())?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn add_org_device(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+    org_id: &str,
+    device_id: &str,
+) -> Result<()> {
+    let url = format!("{}/organization/{}/devices", server_url, org_id);
+    let client = get_client(trust)?;
+
+    let body = AddDeviceBody {
+        device_id: device_id.to_string(),
+    };
+
+    let res = retry_async!(
+        3,
+        3,
+        client.post(&url).bearer_auth(token).json(&body).send()
+    )?;
+
+    match res.error_for_status() {
+        Ok(r) => Ok(r.json().await?),
+        Err(e) => Err(anyhow!(e)),
+    }
+}
+
+pub async fn remove_org_device(
+    server_url: &str,
+    token: &str,
+    trust: bool,
+    org_id: &str,
+    device_id: &str,
+) -> Result<()> {
+    let url = format!(
+        "{}/organization/{}/devices/{}",
+        server_url, org_id, device_id
+    );
+    let client = get_client(trust)?;
+
+    let res = retry_async!(3, 3, client.delete(&url).bearer_auth(token).send())?;
 
     match res.error_for_status() {
         Ok(r) => Ok(r.json().await?),

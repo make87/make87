@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use crate::auth::AuthManager;
 use crate::config::Config;
-use crate::devices::resolve_device_short_id_cached;
+use crate::devices::resolve_device_cached;
 use crate::server;
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
@@ -47,7 +47,7 @@ fn is_docker_compose_yaml(yaml: &str) -> bool {
 }
 
 async fn ctx_for_device(device_name: &str) -> Result<(String, String, String, bool)> {
-    let resolved = resolve_device_short_id_cached(device_name).await?;
+    let resolved = resolve_device_cached(device_name).await?;
     let token = AuthManager::get_cli_token().await?;
     let cfg = Config::load()?;
     Ok((

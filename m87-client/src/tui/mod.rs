@@ -1,9 +1,11 @@
 pub mod exec;
-pub mod logs;
-pub mod metrics;
+pub mod log;
+pub mod metric;
 pub mod shell;
 
 pub mod deploy;
-pub mod devices;
+pub mod device;
 pub mod fs;
 pub mod helper;
+pub mod org;
+pub mod user;

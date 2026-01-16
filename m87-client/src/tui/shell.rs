@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 pub async fn run_shell(device: &str) -> Result<()> {
     let config = Config::load()?;
     tracing::info!("Resolving device address.");
-    let resolved = devices::resolve_device_short_id_cached(device).await?;
+    let resolved = devices::resolve_device_cached(device).await?;
 
     let token = AuthManager::get_cli_token().await?;
     let term = std::env::var("TERM").ok();
@@ -49,7 +49,7 @@ pub async fn run_shell(device: &str) -> Result<()> {
         writer.flush().await?;
     }
 
-    tracing::info!("[done] Connected.");
+    tracing::info!("Connected.");
 
     // === stdin → channel ===
     let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<Vec<u8>>();

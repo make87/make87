@@ -26,7 +26,7 @@ pub async fn run_metrics(device: &str) -> Result<()> {
 async fn run_metrics_inner(device: &str) -> Result<()> {
     let config = Config::load()?;
     // let host = config.get_runtime_server_hostname();
-    let resolved = devices::resolve_device_short_id_cached(device).await?;
+    let resolved = devices::resolve_device_cached(device).await?;
     let token = AuthManager::get_cli_token().await?;
 
     let stream_type = StreamType::Metrics {
@@ -42,7 +42,7 @@ async fn run_metrics_inner(device: &str) -> Result<()> {
     )
     .await?;
 
-    tracing::info!("[done] Connected to device");
+    tracing::info!("Connected to device");
 
     // spawn metrics reader
     let reader = BufReader::new(io);

@@ -4,7 +4,8 @@ use crate::{
     db::Mongo,
     response::ServerResult,
 };
-use mongodb::bson::{doc, oid::ObjectId, DateTime};
+use m87_shared::{roles::Role, users::User};
+use mongodb::bson::{DateTime, doc, oid::ObjectId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -82,6 +83,26 @@ impl UserDoc {
     }
 
     pub fn get_reference_id(&self) -> String {
-        self.email.clone().unwrap_or(self.sub.clone())
+        Self::create_reference_id(&self.email.clone().unwrap_or(self.sub.clone()))
+    }
+
+    pub fn create_reference_id(email: &str) -> String {
+        format!("user:{}", email)
+    }
+
+    pub fn create_owner_scope(email: &str) -> String {
+        if email.contains('@') {
+            format!("user:{}", email)
+        } else {
+            format!("org:{}", email)
+        }
+    }
+
+    pub fn to_public_user(&self, role: &Role) -> User {
+        User {
+            id: self.id.clone().unwrap().to_string(),
+            email: self.email.clone().unwrap_or(self.sub.clone()),
+            role: role.clone(),
+        }
     }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use m87_shared::device::DeviceSystemInfo;
-use mongodb::bson::{doc, oid::ObjectId, DateTime};
+use mongodb::bson::{DateTime, doc, oid::ObjectId};
 
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +63,13 @@ impl AccessControlled for DeviceAuthRequestDoc {
     }
 
     fn allowed_scopes_field() -> Option<&'static str> {
+        None
+    }
+
+    fn owner_scope(&self) -> &str {
+        &self.owner_scope
+    }
+    fn allowed_scopes(&self) -> Option<Vec<String>> {
         None
     }
 }

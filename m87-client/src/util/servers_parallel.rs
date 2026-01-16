@@ -1,5 +1,5 @@
 use anyhow::Result;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, stream};
 use std::future::Future;
 
 pub async fn fanout_servers<T, F, Fut>(
@@ -11,24 +11,36 @@ where
     F: Fn(String) -> Fut + Copy,
     Fut: Future<Output = Result<Vec<T>>>,
 {
-    let results = stream::iter(server_urls)
-        .map(|server_url| {
+    let per_server_results: Vec<Result<Vec<(String, T)>>> = stream::iter(server_urls)
+        .map(|server_url| async move {
             let server_url_clone = server_url.clone();
-            async move {
-                let items = f(server_url).await?;
-                Ok::<_, anyhow::Error>(
-                    items
-                        .into_iter()
-                        .map(|item| (server_url_clone.clone(), item))
-                        .collect::<Vec<_>>(),
-                )
+            match f(server_url).await {
+                Ok(items) => Ok(items
+                    .into_iter()
+                    .map(|item| (server_url_clone.clone(), item))
+                    .collect::<Vec<_>>()),
+                Err(e) => {
+                    // Attach URL context if you want; this is the minimal version.
+                    Err(e)
+                }
             }
         })
         .buffer_unordered(concurrency)
-        .try_collect::<Vec<Vec<(String, T)>>>()
-        .await?;
+        .collect()
+        .await;
 
-    Ok(results.into_iter().flatten().collect())
+    let mut out = Vec::new();
+    for (i, res) in per_server_results.into_iter().enumerate() {
+        match res {
+            Ok(mut v) => out.append(&mut v),
+            Err(err) => {
+                tracing::warn!(server_index = i, error = %err);
+                tracing::debug!(server_index = i, error = %err, "fanout server request failed; skipping");
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 pub async fn find_on_servers<T, F, Fut>(
@@ -75,10 +87,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fanout_servers_multiple_servers() {
-        let servers = vec![
-            "http://server1".to_string(),
-            "http://server2".to_string(),
-        ];
+        let servers = vec!["http://server1".to_string(), "http://server2".to_string()];
         let result = fanout_servers(servers, 2, |url| async move {
             if url == "http://server1" {
                 Ok(vec!["a"])
@@ -112,10 +121,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_on_servers_finds_first() {
-        let servers = vec![
-            "http://server1".to_string(),
-            "http://server2".to_string(),
-        ];
+        let servers = vec!["http://server1".to_string(), "http://server2".to_string()];
         // With concurrency=1, this is deterministic
         let result = find_on_servers(servers, 1, |url| async move {
             if url == "http://server1" {

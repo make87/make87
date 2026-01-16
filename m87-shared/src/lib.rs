@@ -4,5 +4,7 @@ pub mod deploy_spec;
 pub mod device;
 pub mod heartbeat;
 pub mod metrics;
+pub mod org;
 pub mod pagination;
 pub mod roles;
+pub mod users;

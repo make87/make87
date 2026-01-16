@@ -205,6 +205,7 @@ pub enum ServerError {
     AuthError(AuthError),
     BadRequest(String),
     NotFound(String),
+    Timeout(String),
 }
 
 impl Display for ServerError {
@@ -214,6 +215,7 @@ impl Display for ServerError {
             ServerError::AuthError(error) => write!(f, "Authentication Error: {}", error),
             ServerError::BadRequest(message) => write!(f, "Bad Request: {}", message),
             ServerError::NotFound(message) => write!(f, "Not Found: {}", message),
+            ServerError::Timeout(message) => write!(f, "Timeout: {}", message),
         }
     }
 }
@@ -310,6 +312,10 @@ impl ServerError {
     pub fn forbidden(message: &str) -> Self {
         ServerError::AuthError(AuthError::Forbidden(message.to_string()))
     }
+
+    pub fn timeout(message: &str) -> Self {
+        ServerError::Timeout(message.to_string())
+    }
 }
 
 // Tell axum how `AppError` should be converted into a response.
@@ -343,6 +349,7 @@ impl IntoResponse for ServerError {
             }
             ServerError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             ServerError::NotFound(message) => (StatusCode::NOT_FOUND, message),
+            ServerError::Timeout(message) => (StatusCode::REQUEST_TIMEOUT, message),
         };
 
         error!("Returning error response {} {}", status, message);
