@@ -1,4 +1,4 @@
-use mongodb::bson::{doc, Document};
+use mongodb::bson::{Document, doc};
 
 /// Trait for any Mongo model that has a scope-like field controlling access.
 
@@ -22,4 +22,7 @@ pub trait AccessControlled {
             }
         }
     }
+
+    fn owner_scope(&self) -> &str;
+    fn allowed_scopes(&self) -> Option<Vec<String>>;
 }

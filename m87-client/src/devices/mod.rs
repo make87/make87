@@ -2,6 +2,8 @@ use std::io::{self, Write};
 
 use anyhow::{Result, anyhow};
 use m87_shared::device::{AuditLog, DeviceStatus, PublicDevice};
+use m87_shared::roles::Role;
+use m87_shared::users::User;
 use tracing::warn;
 
 use crate::util::device_cache;
@@ -43,7 +45,7 @@ pub async fn get_device_by_name(name: &str) -> Result<PublicDevice> {
         .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", name))
 }
 
-pub async fn resolve_device_short_id_cached(name: &str) -> Result<ResolvedDevice> {
+pub async fn resolve_device_cached(name: &str) -> Result<ResolvedDevice> {
     // 1) try cache first
     let cached = device_cache::try_cache(name)?;
 
@@ -141,7 +143,7 @@ pub fn to_resolved(d: &device_cache::CachedDevice) -> ResolvedDevice {
 }
 
 pub async fn get_device_status(name: &str) -> Result<DeviceStatus> {
-    let resolved = resolve_device_short_id_cached(name).await?;
+    let resolved = resolve_device_cached(name).await?;
 
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
@@ -157,7 +159,7 @@ pub async fn get_audit_logs(
     since: Option<String>,
     max: u32,
 ) -> Result<Vec<AuditLog>> {
-    let resolved = resolve_device_short_id_cached(name).await?;
+    let resolved = resolve_device_cached(name).await?;
 
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
@@ -175,4 +177,69 @@ pub async fn get_audit_logs(
     .await?;
 
     Ok(logs)
+}
+
+pub async fn get_device_users(name: &str) -> Result<Vec<User>> {
+    let resolved = resolve_device_cached(name).await?;
+
+    let token = AuthManager::get_cli_token().await?;
+    let config = Config::load()?;
+    let trust = config.trust_invalid_server_cert;
+
+    let users = server::get_device_users(&resolved.url, &token, trust, &resolved.id).await?;
+
+    Ok(users)
+}
+
+pub async fn add_access(name: &str, email_or_org_id: &str, role: Role) -> Result<()> {
+    let resolved = resolve_device_cached(name).await?;
+
+    let token = AuthManager::get_cli_token().await?;
+    let config = Config::load()?;
+    let trust = config.trust_invalid_server_cert;
+
+    server::add_device_access(
+        &resolved.url,
+        &token,
+        trust,
+        &resolved.id,
+        email_or_org_id,
+        role,
+    )
+    .await?;
+
+    Ok(())
+}
+
+pub async fn remove_access(name: &str, email_or_org_id: &str) -> Result<()> {
+    let resolved = resolve_device_cached(name).await?;
+
+    let token = AuthManager::get_cli_token().await?;
+    let config = Config::load()?;
+    let trust = config.trust_invalid_server_cert;
+
+    server::remove_device_access(&resolved.url, &token, trust, &resolved.id, email_or_org_id)
+        .await?;
+
+    Ok(())
+}
+
+pub async fn update_access(name: &str, email_or_org_id: &str, role: Role) -> Result<()> {
+    let resolved = resolve_device_cached(name).await?;
+
+    let token = AuthManager::get_cli_token().await?;
+    let config = Config::load()?;
+    let trust = config.trust_invalid_server_cert;
+
+    server::update_device_access(
+        &resolved.url,
+        &token,
+        trust,
+        &resolved.id,
+        email_or_org_id,
+        role,
+    )
+    .await?;
+
+    Ok(())
 }

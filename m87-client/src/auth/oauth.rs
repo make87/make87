@@ -237,7 +237,7 @@ pub struct PrintUserAuthRequestHandler;
 #[async_trait::async_trait]
 impl SendUserAuthRequestHandler for PrintUserAuthRequestHandler {
     async fn send_auth_request(&mut self, verification_uri: &str, user_code: &str) -> Result<()> {
-        tracing::info!("[done] Interaction needed");
+        tracing::info!("Interaction needed");
         println!("\nTo authenticate, visit: {}", verification_uri);
         println!("Enter this code: {}\n", user_code);
         Ok(())

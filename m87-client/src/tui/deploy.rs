@@ -353,7 +353,7 @@ pub fn print_deployment_status_snapshot(
         }
     }
 
-    tracing::info!("{out}");
+    print!("{out}");
 }
 
 // counts ok/total over main steps, and includes undo steps only if executed

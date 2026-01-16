@@ -40,7 +40,7 @@ fn open_pty() -> Result<(RawFd, String)> {
 pub async fn open_serial(device: &str, port: &str, baud: u32) -> Result<()> {
     let cfg = Config::load()?;
     let token = AuthManager::get_cli_token().await?;
-    let resolved = devices::resolve_device_short_id_cached(device).await?;
+    let resolved = devices::resolve_device_cached(device).await?;
 
     let stream_type = StreamType::Serial {
         token: token.to_string(),
@@ -59,7 +59,7 @@ pub async fn open_serial(device: &str, port: &str, baud: u32) -> Result<()> {
 
     let (master_fd, slave_path) = open_pty()?;
 
-    info!("[done] Local virtual serial device: {}", slave_path);
+    info!("Local virtual serial device: {}", slave_path);
 
     // Convert master FD → tokio file
     let master = unsafe { tokio::fs::File::from_raw_fd(master_fd) };

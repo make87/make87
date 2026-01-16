@@ -17,6 +17,8 @@ pub mod tui;
 // === CLI entrypoint ===
 pub mod cli;
 
+pub mod org;
+
 /// Entrypoint used by `main.rs` and tests to run the full CLI.
 pub async fn run_cli() -> anyhow::Result<()> {
     cli::cli().await

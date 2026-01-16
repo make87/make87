@@ -1,4 +1,5 @@
 use chrono::{DateTime, Local, TimeZone, Utc};
+use m87_shared::roles::Role;
 use ratatui::crossterm;
 
 #[derive(Clone, Copy)]
@@ -507,5 +508,14 @@ pub fn pending_badge(pending: bool) -> String {
         yellow("pending").to_string()
     } else {
         dim("-").to_string()
+    }
+}
+
+pub fn role_badge(role: &Role) -> String {
+    match role {
+        Role::Owner => red("owner"),
+        Role::Admin => yellow("admin"),
+        Role::Editor => cyan("editor"),
+        Role::Viewer => green("viewer"),
     }
 }

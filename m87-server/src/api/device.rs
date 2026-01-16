@@ -1,8 +1,9 @@
 use axum::extract::{Path, State};
-use axum::routing::get;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use m87_shared::device::{AuditLog, DeviceStatus};
+use m87_shared::device::{AddDeviceAccessBody, AuditLog, DeviceStatus};
 use m87_shared::roles::Role;
+use m87_shared::users::User;
 use mongodb::bson::doc;
 use mongodb::bson::oid::ObjectId;
 
@@ -10,6 +11,8 @@ use crate::api::deploy_spec::create_route as deploy_spec_route;
 use crate::auth::claims::Claims;
 use crate::models::audit_logs::AuditLogDoc;
 use crate::models::device::{DeviceDoc, PublicDevice, UpdateDeviceBody};
+use crate::models::org;
+use crate::models::user::UserDoc;
 use crate::response::{ResponsePagination, ServerAppResult, ServerError, ServerResponse};
 use crate::util::app_state::AppState;
 use crate::util::pagination::RequestPagination;
@@ -25,6 +28,12 @@ pub fn create_route() -> Router<AppState> {
         )
         .route("/{id}/status", get(get_device_status))
         .route("/{id}/audit_logs", get(get_audit_logs_by_device_id))
+        .route("/{id}/users", get(get_device_users))
+        .route("/{id}/access", post(add_device_access))
+        .route(
+            "/{id}/access/{email_or_org_id}",
+            delete(remove_device_access),
+        )
         .merge(deploy_spec_route())
 }
 
@@ -37,7 +46,15 @@ async fn get_devices(
     let devices = claims.list_with_access(&devices_col, &pagination).await?;
     let total_count = claims.count_with_access(&devices_col).await?;
 
-    let mut devices = DeviceDoc::to_public_devices(devices);
+    let mut device_map = Vec::new();
+    for device in devices {
+        let Ok(role) = claims.get_role(&device) else {
+            continue;
+        };
+        device_map.push((device.clone(), role));
+    }
+
+    let mut devices = DeviceDoc::to_public_devices(device_map);
     // for each check if state.relay.has_tunnel
     for device in &mut devices {
         if state.relay.has_tunnel(&device.short_id).await {
@@ -68,7 +85,8 @@ async fn get_device_by_id(
         .find_one_with_access(&state.db.devices(), doc! { "_id": device_id })
         .await?;
     let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
-    let mut pub_device: PublicDevice = device.into();
+    let role = claims.get_role(&device)?;
+    let mut pub_device: PublicDevice = device.to_public_device(&role);
     if state.relay.has_tunnel(&pub_device.short_id).await {
         pub_device.online = true;
     }
@@ -114,7 +132,9 @@ async fn update_device_by_id(
         None => return Err(ServerError::not_found("Device not found after update")),
     };
 
-    let pub_device = updated_device.into();
+    let role = claims.get_role(&updated_device)?;
+
+    let pub_device = updated_device.to_public_device(&role);
     let _ = AuditLogDoc::add(
         &state.db,
         &claims,
@@ -212,5 +232,149 @@ async fn get_device_status(
     Ok(ServerResponse::builder()
         .body(status)
         .status_code(axum::http::StatusCode::OK)
+        .build())
+}
+
+async fn get_device_users(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ServerAppResult<Vec<User>> {
+    let device_oid =
+        ObjectId::parse_str(&id).map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
+
+    // Require Admin on this device
+    let device_opt = claims
+        .find_one_with_scope_and_role(
+            &state.db.devices(),
+            doc! { "_id": &device_oid },
+            Role::Admin,
+        )
+        .await?;
+    let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    // You need to implement this on DeviceDoc (see below).
+    let users = device.list_users_with_access(&state.db).await?;
+
+    Ok(ServerResponse::builder()
+        .body(users)
+        .status_code(axum::http::StatusCode::OK)
+        .build())
+}
+
+async fn add_device_access(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(payload): Json<AddDeviceAccessBody>,
+) -> ServerAppResult<()> {
+    let device_oid =
+        ObjectId::parse_str(&id).map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
+
+    // Require Admin on this device
+    let device_opt = claims
+        .find_one_with_scope_and_role(
+            &state.db.devices(),
+            doc! { "_id": &device_oid },
+            Role::Admin,
+        )
+        .await?;
+    let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    let requester_orgs = org::get_user_orgs(&state.db, &claims.user_email).await?;
+    let user_orgs = org::get_user_orgs(&state.db, &payload.email_or_org_id).await?;
+    let do_share_orgs = requester_orgs.iter().any(|org| user_orgs.contains(org));
+    if !do_share_orgs && !state.config.allow_cros_org_device_sharing {
+        return Err(ServerError::forbidden(
+            "Cannot add member from different organization",
+        ));
+    }
+
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Requested add device access {}", &device_oid),
+        &format!("{}", &payload),
+        Some(device_oid.clone()),
+    )
+    .await;
+
+    let owner_scope = UserDoc::create_owner_scope(&payload.email_or_org_id);
+    let scope = DeviceDoc::create_device_scope(&id);
+    let role = claims.get_role_for_scope(&owner_scope);
+    let role = match role {
+        Ok(role) => role,
+        Err(_) => claims.get_role_for_scope(&scope)?,
+    };
+    if payload.role.rank() > role.rank() {
+        return Err(ServerError::forbidden("Cannot add member with higher role"));
+    }
+
+    // Implement on DeviceDoc (see below).
+    device
+        .add_or_update_device_access(&state.db, &payload.email_or_org_id, payload.role.clone())
+        .await?;
+
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Added device access {}", &device_oid),
+        &format!("{}", &payload),
+        Some(device_oid.clone()),
+    )
+    .await;
+
+    Ok(ServerResponse::builder()
+        .status_code(axum::http::StatusCode::NO_CONTENT)
+        .build())
+}
+
+async fn remove_device_access(
+    claims: Claims,
+    State(state): State<AppState>,
+    Path((id, email_or_org_id)): Path<(String, String)>,
+) -> ServerAppResult<()> {
+    let device_oid =
+        ObjectId::parse_str(&id).map_err(|_| ServerError::bad_request("Invalid ObjectId"))?;
+
+    // Require Admin on this device
+    let device_opt = claims
+        .find_one_with_scope_and_role(
+            &state.db.devices(),
+            doc! { "_id": &device_oid },
+            Role::Admin,
+        )
+        .await?;
+    let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
+
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Requested remove device access {}", &device_oid),
+        &format!("subject={}", &email_or_org_id),
+        Some(device_oid.clone()),
+    )
+    .await;
+
+    // Implement on DeviceDoc (see below).
+    device
+        .remove_device_access(&state.db, &email_or_org_id)
+        .await?;
+
+    let _ = AuditLogDoc::add(
+        &state.db,
+        &claims,
+        &state.config,
+        &format!("Removed device access {}", &device_oid),
+        &format!("subject={}", &email_or_org_id),
+        Some(device_oid.clone()),
+    )
+    .await;
+
+    Ok(ServerResponse::builder()
+        .status_code(axum::http::StatusCode::NO_CONTENT)
         .build())
 }

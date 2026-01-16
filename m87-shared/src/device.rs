@@ -3,7 +3,7 @@ use std::{fmt::Display, hash::Hash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::DeviceClientConfig;
+use crate::{config::DeviceClientConfig, roles::Role};
 
 /// Compute short device ID (first 6 chars of SHA256 hash)
 /// Used for tunnel routing - must be consistent across server and client
@@ -29,6 +29,8 @@ pub struct PublicDevice {
     #[serde(default)]
     pub config: DeviceClientConfig,
     pub system_info: DeviceSystemInfo,
+    #[serde(default)]
+    pub role: Role, // the role of the requestor
 }
 
 impl Display for PublicDevice {
@@ -119,3 +121,18 @@ pub struct AuditLog {
     pub details: String,
     pub device_id: Option<String>,
 }
+
+#[derive(Deserialize, Serialize, Default)]
+pub struct AddDeviceAccessBody {
+    pub email_or_org_id: String,
+    pub role: Role,
+}
+
+impl Display for AddDeviceAccessBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let json = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", json)
+    }
+}
+
+// remove and uupdate bodies

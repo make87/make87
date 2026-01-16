@@ -54,7 +54,7 @@ impl LocalOrRemotePath {
 pub async fn open_sftp_session(device_name: &str) -> anyhow::Result<SftpSession> {
     let cfg = Config::load()?;
     let token = AuthManager::get_cli_token().await?;
-    let resolved = devices::resolve_device_short_id_cached(&device_name).await?;
+    let resolved = devices::resolve_device_cached(&device_name).await?;
 
     // open raw tunnel through HTTPS upgrade
     let stream_type = StreamType::Ssh {
@@ -422,7 +422,7 @@ pub async fn sync(
 
     let mut sftp_src = maybe_open_sftp(&src_path).await?;
     let mut sftp_dst = maybe_open_sftp(&dst_path).await?;
-    tracing::info!("[done] Connected");
+    tracing::info!("Connected");
 
     let src_tree = match &src_path {
         LocalOrRemotePath::Local(p) => read_local_tree(p, excludes).await?,

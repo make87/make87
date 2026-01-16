@@ -84,7 +84,7 @@ impl Claims {
             roles.push(RoleDoc {
                 id: None,
                 reference_id: reference_id.clone(),
-                scope: format!("user:{}", reference_id),
+                scope: reference_id.clone(),
                 role: Role::Owner,
                 created_at: None,
             });
@@ -272,9 +272,57 @@ impl Claims {
         Ok(doc)
     }
 
+    pub fn get_role<T>(&self, object: &T) -> ServerResult<Role>
+    where
+        T: AccessControlled,
+    {
+        // Admin bypass: treat as Owner (or Admin if you prefer)
+        if self.is_admin {
+            return Ok(Role::Owner);
+        }
+
+        // Build set of scopes that grant access to this object
+        // (owner scope always present; allowed scopes optional)
+        let mut object_scopes: Vec<String> = Vec::new();
+        object_scopes.push(object.owner_scope().to_string());
+
+        if let Some(extra) = object.allowed_scopes() {
+            for scope in extra {
+                object_scopes.push(scope);
+            }
+        }
+
+        // Find best role among claims for any of these scopes
+        let mut best: Option<Role> = None;
+        for r in &self.roles {
+            if object_scopes.iter().any(|s| *s == r.scope.as_str()) {
+                best = match best {
+                    None => Some(r.role.clone()),
+                    Some(cur) => {
+                        if r.role.rank() > cur.rank() {
+                            Some(r.role.clone())
+                        } else {
+                            Some(cur)
+                        }
+                    }
+                };
+            }
+        }
+
+        best.ok_or_else(|| ServerError::forbidden("Not found or access denied"))
+    }
+
     pub fn has_scope_and_role(&self, scope: &str, required_role: Role) -> bool {
         self.roles
             .iter()
             .any(|r| r.scope == scope && Role::allows(&r.role, &required_role))
+    }
+
+    pub fn get_role_for_scope(&self, scope: &str) -> ServerResult<Role> {
+        self.roles
+            .iter()
+            .find(|r| r.scope == scope)
+            .map(|r| r.role.clone())
+            .ok_or_else(|| ServerError::forbidden("Not found or access denied"))
     }
 }

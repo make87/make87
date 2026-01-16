@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use anyhow::bail;
 use clap::{CommandFactory, Parser, Subcommand};
+use m87_shared::roles::Role;
 
 use crate::auth;
 use crate::config::Config;
@@ -12,6 +13,7 @@ use crate::device::deploy::SpecType;
 use crate::device::forward;
 use crate::device::serial;
 use crate::devices;
+use crate::org;
 use crate::tui;
 use crate::update;
 #[cfg(feature = "runtime")]
@@ -68,7 +70,7 @@ fn print_help_with_device_commands() {
 #[command(name = "m87")]
 #[command(version, about = "m87 CLI - Unified CLI for the make87 platform", long_about = None)]
 struct Cli {
-    /// Enable verbose logging (disable spinner, show full logs)
+    /// Enable verbose logging
     #[arg(short, long, global = true)]
     verbose: bool,
 
@@ -154,6 +156,91 @@ enum Commands {
 
     #[command(subcommand)]
     Config(ConfigCommands),
+
+    #[command(subcommand)]
+    Org(OrgCommands),
+}
+
+#[derive(Subcommand)]
+enum OrgCommands {
+    /// Manage human members of the org
+    #[clap(subcommand)]
+    Members(MemberAction),
+    /// Manage devices owned by the org
+    #[clap(subcommand)]
+    Devices(OrgDeviceAction),
+    Create {
+        id: String,
+        owner_email: String,
+    },
+    Delete {
+        id: String,
+    },
+    Update {
+        id: String,
+        new_id: String,
+    },
+    List,
+    //     Invites {
+    //         #[clap(subcommand)]
+    //         action: InviteAction,
+    //     },
+}
+
+// #[derive(Subcommand)]
+// enum InviteAction {
+//     List,
+//     Accept { invite_id: String },
+//     Reject { invite_id: String },
+// }
+
+#[derive(Subcommand)]
+enum OrgDeviceAction {
+    Add {
+        device_name: String,
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    Remove {
+        device_name: String,
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    List {
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MemberAction {
+    Add {
+        /// Email address of the user to add
+        email: String,
+        /// Role of the user to add
+        #[arg(value_parser = parse_role)]
+        role: Role,
+        /// Optional organization ID to add the user to. Otherwise will be attempted to auto resolve
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    Update {
+        email: String,
+        #[arg(value_parser = parse_role)]
+        role: Role,
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    Remove {
+        email: String,
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    List {
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -270,6 +357,31 @@ pub enum DeviceCommand {
     /// Manage deployments on the device
     #[command(subcommand)]
     Deployment(DeploymentCommand),
+
+    #[clap(subcommand)]
+    Access(AccessAction),
+}
+
+fn parse_role(s: &str) -> Result<Role, String> {
+    Role::from_str(s)
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AccessAction {
+    Add {
+        email_or_org_id: String,
+        #[arg(value_parser = parse_role)]
+        role: Role,
+    },
+    Remove {
+        email_or_org_id: String,
+    },
+    List,
+    Update {
+        email_or_org_id: String,
+        #[arg(value_parser = parse_role)]
+        role: Role,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -513,31 +625,13 @@ pub async fn cli() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
-    let mut verbose = cli.verbose;
-
-    let cli_mode = match &cli.command {
-        // Runtime run must never be CLI mode
-        #[cfg(feature = "runtime")]
-        Commands::Runtime(RuntimeCommands::Run { .. }) => {
-            verbose = true;
-            false
-        }
-        Commands::Ssh(SshCommands::Connect(_)) => {
-            verbose = true;
-            false
-        }
-        Commands::Update { .. } => {
-            verbose = false;
-            false
-        }
-
-        // Everything else is CLI UX
-        _ => true,
+    // if is runtime run aso set to verbose
+    let is_run = match &cli.command {
+        Commands::Runtime(RuntimeCommands::Run { .. }) => true,
+        _ => false,
     };
-
-    init_logging("info", cli_mode, verbose);
-    if cli_mode && !verbose {
-        tracing::info!("[loading]");
+    if cli.verbose || is_run {
+        init_logging("info");
     }
     set_tls_provider();
 
@@ -545,13 +639,13 @@ pub async fn cli() -> anyhow::Result<()> {
         Commands::Login => {
             tracing::info!("Logging in...");
             auth::login_cli().await?;
-            tracing::info!("[done] Logged in successfully");
+            tracing::info!("Logged in successfully");
         }
 
         Commands::Logout => {
             tracing::info!("Logging out...");
             auth::logout_cli().await?;
-            tracing::info!("[done] Logged out successfully");
+            tracing::info!("Logged out successfully");
         }
 
         Commands::Ssh(cmd) => match cmd {
@@ -559,13 +653,13 @@ pub async fn cli() -> anyhow::Result<()> {
                 tracing::info!("Enabling SSH...");
                 device::ssh::ssh_enable()?;
                 tracing::info!(
-                    "[done] SSH enabled successfully. You can now connect to device via ssh <device_name>.m87"
+                    "SSH enabled successfully. You can now connect to device via ssh <device_name>.m87"
                 );
             }
             SshCommands::Disable => {
                 tracing::info!("Disabling SSH...");
                 device::ssh::ssh_disable()?;
-                tracing::info!("[done] SSH disabled successfully");
+                tracing::info!("SSH disabled successfully");
             }
             SshCommands::Connect(args) => {
                 if args.is_empty() {
@@ -607,11 +701,11 @@ pub async fn cli() -> anyhow::Result<()> {
                 tracing::info!("Registering device as runtime...");
                 let sysinfo = util::system_info::get_system_info().await?;
                 auth::register_device(owner_scope, sysinfo).await?;
-                tracing::info!("[done] Device registered as runtime successfully");
+                tracing::info!("Device registered as runtime successfully");
             }
             RuntimeCommands::Logout => {
                 auth::logout_device().await?;
-                tracing::info!("[done] Logged out successfully");
+                tracing::info!("Logged out successfully");
             }
             RuntimeCommands::Run { org_id, email } => {
                 save_owner_if_provided(org_id, email)?;
@@ -672,7 +766,7 @@ pub async fn cli() -> anyhow::Result<()> {
             DevicesCommands::List => {
                 let devices = devices::list_devices().await?;
                 let requests = auth::list_auth_requests().await?;
-                tui::devices::print_devices_table(&devices, &requests);
+                tui::device::print_devices_table(&devices, &requests);
             }
             DevicesCommands::Show { device } => {
                 eprintln!("Error: 'devices show' command is not yet implemented");
@@ -682,12 +776,12 @@ pub async fn cli() -> anyhow::Result<()> {
             DevicesCommands::Approve { device } => {
                 tracing::info!("Approving device: {}", device);
                 auth::accept_auth_request(&device).await?;
-                tracing::info!("[done] Device approved successfully");
+                tracing::info!("Device approved successfully");
             }
             DevicesCommands::Reject { device } => {
                 tracing::info!("Rejecting device: {}", device);
                 auth::reject_auth_request(&device).await?;
-                tracing::info!("[done] Device rejected successfully");
+                tracing::info!("Device rejected successfully");
             }
         },
 
@@ -708,16 +802,16 @@ pub async fn cli() -> anyhow::Result<()> {
                 tracing::info!(
                     "Note: Specific version updates not yet supported, updating to latest version"
                 );
-                tracing::info!("[done] Requested version: {}", v);
+                tracing::info!("Requested version: {}", v);
             }
 
             tracing::info!("[loading]");
             tracing::info!("Checking for updates...");
             let success = update::update(true).await?;
             if success {
-                tracing::info!("[done] Update successful");
+                tracing::info!("Update successful");
             } else {
-                tracing::info!("[done] Already at latest version");
+                tracing::info!("Already at latest version");
             }
         }
 
@@ -787,18 +881,97 @@ pub async fn cli() -> anyhow::Result<()> {
                 }
 
                 cfg.save().context("Failed to save config")?;
-                tracing::info!("[done] Config updated");
+                tracing::info!("Config updated");
             }
             ConfigCommands::Show => {
                 let cfg = Config::load().context("Failed to load config")?;
-                tracing::info!("[done] Config laoded");
+                tracing::info!("Config laoded");
                 println!("{:#?}", cfg);
             }
             ConfigCommands::File => {
                 let path = Config::config_file_path().context("Failed to get config path")?;
-                tracing::info!("[done] Config path loaded");
+                tracing::info!("Config path loaded");
                 println!("{:#?}", path);
             }
+        },
+
+        Commands::Org(cmd) => match cmd {
+            OrgCommands::List => {
+                let orgs = org::list_organizations().await?;
+                tui::org::print_device_organizations(&orgs);
+            }
+            OrgCommands::Create { id, owner_email } => {
+                let _ = org::create_organization(&id, &owner_email).await?;
+                println!("Organization created");
+            }
+            OrgCommands::Delete { id } => {
+                let _ = org::delete_organization(&id).await?;
+                println!("Organization deleted");
+            }
+            OrgCommands::Update { id, new_id } => {
+                let _ = org::update_organization(&id, &new_id).await?;
+                println!("Organization updated");
+            }
+            OrgCommands::Members(action) => match action {
+                MemberAction::List { org_id } => {
+                    let members = org::list_members(org_id).await?;
+                    tui::user::print_users(&members);
+                }
+                MemberAction::Add {
+                    email,
+                    org_id,
+                    role,
+                } => {
+                    let _ = org::add_member(org_id, &email, role).await?;
+                    println!("User added");
+                }
+                MemberAction::Update {
+                    email,
+                    org_id,
+                    role,
+                } => {
+                    let _ = org::add_member(org_id, &email, role).await?;
+                    println!("User updated");
+                }
+                MemberAction::Remove { org_id, email } => {
+                    let _ = org::remove_member(org_id, &email).await?;
+                    println!("User removed");
+                }
+            },
+            OrgCommands::Devices(action) => match action {
+                OrgDeviceAction::List { org_id } => {
+                    let devices = org::list_devices(org_id).await?;
+                    tui::device::print_devices_table(&devices, &vec![]);
+                }
+                OrgDeviceAction::Add {
+                    org_id,
+                    device_name: device_id,
+                } => {
+                    let _ = org::add_device(org_id, &device_id).await?;
+                    println!("Device added");
+                }
+                OrgDeviceAction::Remove {
+                    org_id,
+                    device_name: device_id,
+                } => {
+                    let _ = org::remove_device(org_id, &device_id).await?;
+                    println!("Device removed");
+                }
+            },
+            // OrgCommands::Invites { action } => match action {
+            //     InviteAction::List => {
+            //         let invites = org::list_invites().await?;
+            //         println!("{:#?}", invites);
+            //     }
+            //     InviteAction::Accept { invite_id } => {
+            //         let invite = org::handle_invite(&invite_id, true).await?;
+            //         println!("{:#?}", invite);
+            //     }
+            //     InviteAction::Reject { invite_id } => {
+            //         let invite = org::handle_invite(&invite_id, false).await?;
+            //         println!("{:#?}", invite);
+            //     }
+            // },
         },
     }
 
@@ -825,12 +998,12 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         }
 
         DeviceCommand::Logs { follow: _, tail: _ } => {
-            tui::logs::run_logs(&device).await?;
+            tui::log::run_logs(&device).await?;
             Ok(())
         }
 
         DeviceCommand::Metrics => {
-            tui::metrics::run_metrics(&device).await?;
+            tui::metric::run_metrics(&device).await?;
             Ok(())
         }
 
@@ -852,7 +1025,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
 
         DeviceCommand::Status => {
             let status = devices::get_device_status(&device).await?;
-            tui::devices::print_device_status(&device, &status);
+            tui::device::print_device_status(&device, &status);
             Ok(())
         }
 
@@ -864,10 +1037,39 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
         } => {
             let logs = devices::get_audit_logs(&device, until, since, max).await?;
 
-            tracing::info!("[done] Received audit logs");
-            tui::devices::print_deployment_reports(&logs, details);
+            tracing::info!("Received audit logs");
+            tui::device::print_deployment_reports(&logs, details);
             Ok(())
         }
+
+        DeviceCommand::Access(action) => match action {
+            AccessAction::List => {
+                let users = devices::get_device_users(&device).await?;
+                tui::user::print_users(&users);
+                Ok(())
+            }
+            AccessAction::Add {
+                email_or_org_id,
+                role,
+            } => {
+                let _ = devices::add_access(&device, &email_or_org_id, role).await?;
+                tracing::info!("Added access");
+                Ok(())
+            }
+            AccessAction::Remove { email_or_org_id } => {
+                let _ = devices::remove_access(&device, &email_or_org_id).await?;
+                tracing::info!("Removed access");
+                Ok(())
+            }
+            AccessAction::Update {
+                email_or_org_id,
+                role,
+            } => {
+                let _ = devices::update_access(&device, &email_or_org_id, role).await?;
+                tracing::info!("Updated access");
+                Ok(())
+            }
+        },
 
         DeviceCommand::Deploy(args) => {
             let _ = device::deploy::deploy_file(
@@ -879,7 +1081,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             )
             .await?;
 
-            tracing::info!("[done] Added job spec to deployment");
+            tracing::info!("Added job spec to deployment");
             Ok(())
         }
 
@@ -887,7 +1089,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             let _ = device::deploy::undeploy_file(&device, args.job_id.clone(), args.deployment_id)
                 .await?;
 
-            tracing::info!("[done] Removed {} from deployment", args.job_id);
+            tracing::info!("Removed {} from deployment", args.job_id);
             Ok(())
         }
 
@@ -895,7 +1097,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
             DeploymentCommand::List => {
                 let deployments = device::deploy::get_deployments(&device).await?;
 
-                tracing::info!("[done] Loaded deployments");
+                tracing::info!("Loaded deployments");
                 tui::deploy::print_revision_list_short(&deployments);
                 Ok(())
             }
@@ -905,7 +1107,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
 
                 let deployment = device::deploy::create_deployment(&device, active).await?;
 
-                tracing::info!("[done] Created deployment");
+                tracing::info!("Created deployment");
                 tui::deploy::print_revision_verbose(&deployment);
                 Ok(())
             }
@@ -930,7 +1132,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
                 let snapshot =
                     device::deploy::get_deployment_snapshot(&device, &deployment_id).await?;
 
-                tracing::info!("[done] Received deployment reports");
+                tracing::info!("Received deployment reports");
                 let mut config = tui::helper::RenderOpts::default();
                 config.show_logs_inline = logs;
                 tui::deploy::print_deployment_status_snapshot(&snapshot, &config);
@@ -955,7 +1157,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
                     },
                 };
                 let deployment = device::deploy::get_deployment(&device, &deployment_id).await?;
-                tracing::info!("[done] Loaded deployment");
+                tracing::info!("Loaded deployment");
                 match yaml {
                     true => tui::deploy::print_revision_verbose(&deployment),
                     false => {
@@ -984,22 +1186,22 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
                     }
                 }
                 let _ = device::deploy::remove_deployment(&device, deployment_id).await?;
-                tracing::info!("[done] Successfully removed deployment");
+                tracing::info!("Successfully removed deployment");
                 Ok(())
             }
 
             DeploymentCommand::Active => {
                 let deployment_id = device::deploy::get_active_deployment_id(&device).await?;
                 match deployment_id {
-                    Some(id) => tracing::info!("[done] Active deployment ID: {}", id),
-                    None => tracing::info!("[done] No active deployment"),
+                    Some(id) => tracing::info!("Active deployment ID: {}", id),
+                    None => tracing::info!("No active deployment"),
                 }
                 Ok(())
             }
 
             DeploymentCommand::Activate { deployment_id } => {
                 let _ = device::deploy::deployment_active_set(&device, deployment_id).await?;
-                tracing::info!("[done] Successfully activated deployment");
+                tracing::info!("Successfully activated deployment");
 
                 Ok(())
             }
@@ -1011,7 +1213,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
                 let deployment =
                     device::deploy::clone_deployment(&device, deployment_id, active).await?;
                 tracing::info!(
-                    "[done] Successfully cloned deployment. New ID {}",
+                    "Successfully cloned deployment. New ID {}",
                     deployment.id.clone().unwrap()
                 );
                 tui::deploy::print_revision_short(&deployment);
@@ -1024,7 +1226,7 @@ async fn handle_device_command(cmd: DeviceRoot) -> anyhow::Result<()> {
 
                 let deployment = device::deploy::deployment_update(&device, args).await?;
                 tracing::info!(
-                    "[done] Successfully updated deployment. New ID {}",
+                    "Successfully updated deployment. New ID {}",
                     deployment.id.clone().unwrap()
                 );
                 tui::deploy::print_revision_short_detail(&deployment);

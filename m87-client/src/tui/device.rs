@@ -1,6 +1,6 @@
 use crate::{
     tui::helper::{
-        Align, ColSpec, RenderOpts, Table, bold, cyan, dim, green, pending_badge, red,
+        Align, ColSpec, RenderOpts, Table, bold, cyan, dim, green, pending_badge, red, role_badge,
         status_badge, terminal_width, yellow,
     },
     util::device_cache::try_get_name_from_long_id,
@@ -44,6 +44,14 @@ pub fn print_devices_table(devices: &[PublicDevice], auth_requests: &[DeviceAuth
                 min: 6,
                 max: Some(8),
                 weight: 0,
+                align: Align::Left,
+                wrap: false,
+            },
+            ColSpec {
+                title: "Role",
+                min: 10,
+                max: Some(16),
+                weight: 4,
                 align: Align::Left,
                 wrap: false,
             },
@@ -173,6 +181,7 @@ pub fn print_devices_table(devices: &[PublicDevice], auth_requests: &[DeviceAuth
                     &dev.short_id,
                     &dev.name,
                     &status_badge(dev.online),
+                    &role_badge(&dev.role),
                     &dev.system_info.architecture,
                     os,
                     ip,

@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 pub async fn run_logs(device: &str) -> Result<()> {
     let config = Config::load()?;
 
-    let resolved = devices::resolve_device_short_id_cached(device).await?;
+    let resolved = devices::resolve_device_cached(device).await?;
 
     let token = AuthManager::get_cli_token().await?;
 
@@ -28,7 +28,7 @@ pub async fn run_logs(device: &str) -> Result<()> {
     .await
     .context("Failed to connect to RAW metrics stream")?;
 
-    tracing::info!("[done] Connected. Press Ctrl+C to exit.\n");
+    tracing::info!("Connected. Press Ctrl+C to exit.\n");
 
     let mut stdout = tokio::io::stdout();
 

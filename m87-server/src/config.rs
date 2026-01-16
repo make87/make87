@@ -22,6 +22,10 @@ fn default_audit_retention_days() -> u32 {
     7
 }
 
+fn default_allow_cros_org_device_sharing() -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub mongo_uri: String,
@@ -41,6 +45,8 @@ pub struct AppConfig {
     pub report_retention_days: u32,
     #[serde(default = "default_audit_retention_days")]
     pub audit_retention_days: u32,
+    #[serde(default = "default_allow_cros_org_device_sharing")]
+    pub allow_cros_org_device_sharing: bool,
 }
 
 impl AppConfig {
@@ -97,6 +103,11 @@ impl AppConfig {
             .parse()
             .unwrap();
 
+        let allow_cros_org_device_sharing = std::env::var("ALLOW_CROS_ORG_DEVICE_SHARING")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse()
+            .unwrap();
+
         Ok(Self {
             mongo_uri,
             mongo_db,
@@ -112,6 +123,7 @@ impl AppConfig {
             admin_key,
             report_retention_days,
             audit_retention_days,
+            allow_cros_org_device_sharing,
         })
     }
 }

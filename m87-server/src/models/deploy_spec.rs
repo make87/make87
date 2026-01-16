@@ -51,6 +51,12 @@ impl AccessControlled for DeployRevisionDoc {
     fn allowed_scopes_field() -> Option<&'static str> {
         Some("allowed_scopes")
     }
+    fn owner_scope(&self) -> &str {
+        &self.owner_scope
+    }
+    fn allowed_scopes(&self) -> Option<Vec<String>> {
+        Some(self.allowed_scopes.clone())
+    }
 }
 
 pub fn to_update_doc(

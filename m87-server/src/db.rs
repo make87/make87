@@ -78,6 +78,22 @@ impl Mongo {
                     .build(),
             )
             .await?;
+        self.roles()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "scope": 1  })
+                    .options(IndexOptions::builder().build())
+                    .build(),
+            )
+            .await?;
+        self.roles()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "reference_id": 1  })
+                    .options(IndexOptions::builder().build())
+                    .build(),
+            )
+            .await?;
 
         self.device_auth_requests()
             .create_index(IndexModel::builder().keys(doc! { "request_id": 1 }).build())
