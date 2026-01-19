@@ -1,6 +1,6 @@
 use anyhow::Result;
-use futures::{StreamExt, TryStreamExt, stream};
-use std::future::Future;
+use futures::{StreamExt, stream};
+use std::{future::Future, time::Duration};
 
 pub async fn fanout_servers<T, F, Fut>(
     server_urls: Vec<String>,
@@ -11,24 +11,50 @@ where
     F: Fn(String) -> Fut + Copy,
     Fut: Future<Output = Result<Vec<T>>>,
 {
-    let results = stream::iter(server_urls)
+    let concurrency = concurrency.max(1); // avoid buffer_unordered(0) deadlock
+
+    let per_server_results: Vec<Result<Vec<(String, T)>>> = stream::iter(server_urls)
         .map(|server_url| {
-            let server_url_clone = server_url.clone();
+            let url_for_items = server_url.clone();
             async move {
-                let items = f(server_url).await?;
-                Ok::<_, anyhow::Error>(
-                    items
+                tracing::debug!(server_url = %server_url, "fanout: starting");
+
+                // pick a sane timeout for your use-case
+                let res = tokio::time::timeout(Duration::from_secs(30), f(server_url)).await;
+
+                let mapped = match res {
+                    Ok(Ok(items)) => Ok(items
                         .into_iter()
-                        .map(|item| (server_url_clone.clone(), item))
-                        .collect::<Vec<_>>(),
-                )
+                        .map(|item| (url_for_items.clone(), item))
+                        .collect::<Vec<_>>()),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => {
+                        tracing::warn!(server_url = %url_for_items, "fanout: timeout; skipping");
+                        // if you want to keep signature `Result<...>`, turn timeout into an error
+                        // otherwise you can return Ok(vec![]) here and skip logging later.
+                        return Ok(Vec::new());
+                    }
+                };
+
+                tracing::debug!(server_url = %url_for_items, ok = mapped.is_ok(), "fanout: finished");
+                mapped
             }
         })
         .buffer_unordered(concurrency)
-        .try_collect::<Vec<Vec<(String, T)>>>()
-        .await?;
+        .collect()
+        .await;
 
-    Ok(results.into_iter().flatten().collect())
+    let mut out = Vec::new();
+    for res in per_server_results {
+        match res {
+            Ok(mut v) => out.append(&mut v),
+            Err(err) => {
+                tracing::warn!(error = %err, "fanout: request failed; skipping");
+            }
+        }
+    }
+
+    Ok(out)
 }
 
 pub async fn find_on_servers<T, F, Fut>(
@@ -75,10 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_fanout_servers_multiple_servers() {
-        let servers = vec![
-            "http://server1".to_string(),
-            "http://server2".to_string(),
-        ];
+        let servers = vec!["http://server1".to_string(), "http://server2".to_string()];
         let result = fanout_servers(servers, 2, |url| async move {
             if url == "http://server1" {
                 Ok(vec!["a"])
@@ -112,10 +135,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_find_on_servers_finds_first() {
-        let servers = vec![
-            "http://server1".to_string(),
-            "http://server2".to_string(),
-        ];
+        let servers = vec!["http://server1".to_string(), "http://server2".to_string()];
         // With concurrency=1, this is deterministic
         let result = find_on_servers(servers, 1, |url| async move {
             if url == "http://server1" {

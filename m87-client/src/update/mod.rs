@@ -1,12 +1,11 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use self_update::cargo_crate_version;
 use self_update::version::bump_is_greater;
 use serde::Deserialize;
 use std::fs::File;
 use tracing::{error, info};
 
-const GITHUB_LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/make87/m87/releases/latest";
+const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/make87/m87/releases/latest";
 
 fn arch_bin_name() -> &'static str {
     #[cfg(target_arch = "x86_64")]
@@ -59,10 +58,7 @@ pub async fn update(interactive: bool) -> Result<bool> {
     // Check if update is needed
     if !bump_is_greater(current_version, new_version)? {
         if interactive {
-            info!(
-                "[done] You are running the latest version ({})",
-                current_version
-            );
+            info!("You are running the latest version ({})", current_version);
         }
         return Ok(false);
     }
@@ -75,10 +71,7 @@ pub async fn update(interactive: bool) -> Result<bool> {
         .ok_or_else(|| anyhow!("Asset '{}' not found in release", asset_name))?;
 
     if interactive {
-        info!(
-            "New release found: v{} → v{}",
-            current_version, new_version
-        );
+        info!("New release found: v{} → v{}", current_version, new_version);
         info!("Downloading {}...", asset_name);
     }
 
@@ -89,10 +82,7 @@ pub async fn update(interactive: bool) -> Result<bool> {
     // Download the raw binary directly (no archive extraction needed)
     let tmp_file = File::create(&tmp_path)?;
     self_update::Download::from_url(&asset.browser_download_url)
-        .set_header(
-            reqwest::header::ACCEPT,
-            "application/octet-stream".parse()?,
-        )
+        .set_header(reqwest::header::ACCEPT, "application/octet-stream".parse()?)
         .show_progress(interactive)
         .download_to(tmp_file)?;
 
@@ -109,10 +99,7 @@ pub async fn update(interactive: bool) -> Result<bool> {
     }
     self_update::self_replace::self_replace(&tmp_path)?;
 
-    info!(
-        "[done] Updated from v{} → v{}",
-        current_version, new_version
-    );
+    info!("Updated from v{} → v{}", current_version, new_version);
     Ok(true)
 }
 
@@ -169,9 +156,11 @@ mod tests {
         assert_eq!(release.tag_name, "v1.2.3");
         assert_eq!(release.assets.len(), 2);
         assert_eq!(release.assets[0].name, "m87-x86_64-unknown-linux-gnu");
-        assert!(release.assets[0]
-            .browser_download_url
-            .starts_with("https://"));
+        assert!(
+            release.assets[0]
+                .browser_download_url
+                .starts_with("https://")
+        );
     }
 
     #[test]
@@ -221,10 +210,7 @@ mod tests {
             "Tag should start with 'v': {}",
             release.tag_name
         );
-        assert!(
-            !release.assets.is_empty(),
-            "Release should have assets"
-        );
+        assert!(!release.assets.is_empty(), "Release should have assets");
 
         // Check that our architecture's binary exists
         let asset_name = arch_bin_name();

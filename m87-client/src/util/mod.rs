@@ -20,7 +20,6 @@ pub mod device_cache;
 pub mod docker;
 pub mod format;
 pub mod fs;
-pub mod log_renderer;
 pub mod servers_parallel;
 pub mod ssh;
 pub mod tls;

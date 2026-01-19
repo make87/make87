@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use m87_shared::deploy_spec::{DeployReportKind, DeploymentRevision, build_instruction_hash};
 use m87_shared::device::DeviceStatus;
+use m87_shared::roles::Role;
+use m87_shared::users::User;
 use mongodb::bson::{DateTime, Document, doc, oid::ObjectId};
 
 use serde::{Deserialize, Serialize};
@@ -12,10 +15,13 @@ use serde::{Deserialize, Serialize};
 pub use m87_shared::config::DeviceClientConfig;
 pub use m87_shared::device::{DeviceSystemInfo, PublicDevice, short_device_id};
 pub use m87_shared::heartbeat::{HeartbeatRequest, HeartbeatResponse};
+use tokio_stream::StreamExt;
 
 use crate::config::AppConfig;
 use crate::models::audit_logs::AuditLogDoc;
 use crate::models::deploy_spec::{CreateDeployReportBody, DeployReportDoc, DeployRevisionDoc};
+use crate::models::org;
+use crate::models::roles::{CreateRoleBinding, RoleDoc, reference_id_for_subject};
 use crate::{
     auth::{access_control::AccessControlled, claims::Claims},
     db::Mongo,
@@ -120,12 +126,19 @@ pub struct DeviceDoc {
 }
 
 impl DeviceDoc {
+    pub fn scope_for_device(device_id: &ObjectId) -> String {
+        Self::create_device_scope(&device_id.to_string())
+    }
+    pub fn create_device_scope(device_id: &str) -> String {
+        format!("device:{}", device_id.to_string())
+    }
+
     pub async fn create_from(db: &Arc<Mongo>, create_body: CreateDeviceBody) -> ServerResult<()> {
         let device_id = match create_body.id {
             Some(id) => ObjectId::parse_str(&id)?,
             None => ObjectId::new(),
         };
-        let self_scope = format!("device:{}", device_id.to_string());
+        let self_scope = Self::scope_for_device(&device_id);
         let allowed_scopes = match create_body.allowed_scopes.contains(&self_scope) {
             true => create_body.allowed_scopes,
             false => {
@@ -358,10 +371,127 @@ impl DeviceDoc {
         };
         Ok(status)
     }
+
+    pub async fn add_or_update_device_access(
+        &self,
+        db: &Arc<Mongo>,
+        email_or_org_id: &str,
+        role: Role,
+    ) -> ServerResult<()> {
+        let reference_id = reference_id_for_subject(email_or_org_id);
+        let scope = Self::scope_for_device(&self.id.clone().unwrap());
+
+        // Create binding (your RoleDoc::create already encodes "role + scope" binding).
+        // If it should be idempotent, implement create-as-upsert inside RoleDoc::create or handle dup key errors here.
+        RoleDoc::create(
+            db,
+            CreateRoleBinding {
+                reference_id,
+                role,
+                scope,
+            },
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove_device_access(
+        &self,
+        db: &Arc<Mongo>,
+        email_or_org_id: &str,
+    ) -> ServerResult<()> {
+        let reference_id = reference_id_for_subject(email_or_org_id);
+        let scope = Self::scope_for_device(&self.id.clone().unwrap());
+
+        // If your RoleDoc has a delete helper, call it. Otherwise do a direct delete.
+        let roles = db.roles(); // adjust to your collection getter
+        let res = roles
+            .delete_one(doc! { "reference_id": &reference_id, "scope": &scope })
+            .await?;
+
+        if res.deleted_count == 0 {
+            return Err(ServerError::not_found("Access binding not found"));
+        }
+        Ok(())
+    }
+
+    pub async fn list_users_with_access(&self, db: &Arc<Mongo>) -> ServerResult<Vec<User>> {
+        let scope = Self::scope_for_device(&self.id.clone().unwrap());
+
+        // Fetch all role bindings for this device scope.
+        // Assumes RoleDoc stored fields: reference_id, scope, role.
+        let roles = db.roles(); // adjust
+        let mut cursor = roles.find(doc! { "scope": &scope }).await?;
+
+        let mut emails: HashMap<String, Role> = HashMap::new();
+        let mut org_ids: Vec<String> = Vec::new();
+
+        while let Some(role_doc) = cursor.try_next().await? {
+            if let Some(email) = role_doc.reference_id.strip_prefix("user:") {
+                emails.insert(email.to_string(), role_doc.role);
+            } else if let Some(org) = role_doc.reference_id.strip_prefix("org:") {
+                org_ids.push(org.to_string());
+            }
+        }
+
+        let org_members = match !org_ids.is_empty() {
+            true => org::get_org_members(db, org_ids).await?,
+            false => Vec::new(),
+        };
+
+        let mut users_out: Vec<User> = Vec::new();
+        if !emails.is_empty() {
+            let email_vec = emails
+                .iter()
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<String>>();
+            let mut c = db
+                .users() // adjust to your users collection getter
+                .find(doc! { "email": { "$in": &email_vec } })
+                .await?;
+
+            while let Some(udoc) = c.try_next().await? {
+                if let Some(email) = &udoc.email {
+                    if let Some(user_role) = &emails.get(email) {
+                        users_out.push(udoc.to_public_user(user_role)); // adjust mapping to shared User
+                    }
+                }
+            }
+        }
+
+        let mut merged: HashMap<String, User> = HashMap::new();
+
+        for u in users_out.into_iter() {
+            merged.insert(u.email.clone(), u);
+        }
+
+        for u in org_members.into_iter() {
+            match merged.get_mut(&u.email) {
+                None => {
+                    merged.insert(u.email.clone(), u);
+                }
+                Some(existing) => {
+                    if u.role.rank() > existing.role.rank() {
+                        existing.role = u.role;
+                    }
+                }
+            }
+        }
+
+        Ok(merged.into_values().collect())
+    }
 }
 
-impl Into<PublicDevice> for DeviceDoc {
-    fn into(self) -> PublicDevice {
+impl DeviceDoc {
+    pub fn to_public_devices(devices: Vec<(DeviceDoc, Role)>) -> Vec<PublicDevice> {
+        devices
+            .into_iter()
+            .map(|(device, role)| device.to_public_device(&role))
+            .collect()
+    }
+
+    pub fn to_public_device(self, role: &Role) -> PublicDevice {
         PublicDevice {
             id: self.id.unwrap().to_string(),
             name: self.name.clone(),
@@ -374,13 +504,8 @@ impl Into<PublicDevice> for DeviceDoc {
             target_version: self.target_version.clone(),
             config: self.config.clone(),
             system_info: self.system_info.clone(),
+            role: role.clone(),
         }
-    }
-}
-
-impl DeviceDoc {
-    pub fn to_public_devices(devices: Vec<DeviceDoc>) -> Vec<PublicDevice> {
-        devices.into_iter().map(|device| device.into()).collect()
     }
 }
 
@@ -390,5 +515,11 @@ impl AccessControlled for DeviceDoc {
     }
     fn allowed_scopes_field() -> Option<&'static str> {
         Some("allowed_scopes")
+    }
+    fn owner_scope(&self) -> &str {
+        &self.owner_scope
+    }
+    fn allowed_scopes(&self) -> Option<Vec<String>> {
+        Some(self.allowed_scopes.clone())
     }
 }

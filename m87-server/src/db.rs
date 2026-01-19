@@ -78,6 +78,22 @@ impl Mongo {
                     .build(),
             )
             .await?;
+        self.roles()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "scope": 1  })
+                    .options(IndexOptions::builder().build())
+                    .build(),
+            )
+            .await?;
+        self.roles()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "reference_id": 1  })
+                    .options(IndexOptions::builder().build())
+                    .build(),
+            )
+            .await?;
 
         self.device_auth_requests()
             .create_index(IndexModel::builder().keys(doc! { "request_id": 1 }).build())
@@ -133,9 +149,9 @@ impl Mongo {
             .create_index(IndexModel::builder().keys(doc! { "device_id": 1 }).build())
             .await?;
 
-        self.deploy_revisions()
-            .create_index(IndexModel::builder().keys(doc! { "group_id": 1 }).build())
-            .await?;
+        // self.deploy_revisions()
+        //     .create_index(IndexModel::builder().keys(doc! { "group_id": 1 }).build())
+        //     .await?;
 
         // add compund for device/group_id and active flag
         self.deploy_revisions()
@@ -161,21 +177,21 @@ impl Mongo {
             .await?;
 
         // group + revision.id
-        self.deploy_revisions()
-            .create_index(
-                IndexModel::builder()
-                    .keys(doc! { "group_id": 1, "revision.id": 1 })
-                    .build(),
-            )
-            .await?;
+        // self.deploy_revisions()
+        //     .create_index(
+        //         IndexModel::builder()
+        //             .keys(doc! { "group_id": 1, "revision.id": 1 })
+        //             .build(),
+        //     )
+        //     .await?;
 
         self.deploy_reports()
             .create_index(IndexModel::builder().keys(doc! { "device_id": 1 }).build())
             .await?;
 
-        self.deploy_reports()
-            .create_index(IndexModel::builder().keys(doc! { "group_id": 1 }).build())
-            .await?;
+        // self.deploy_reports()
+        //     .create_index(IndexModel::builder().keys(doc! { "group_id": 1 }).build())
+        //     .await?;
 
         // ttl index
         self.deploy_reports()
@@ -197,6 +213,13 @@ impl Mongo {
             .create_index(
                 IndexModel::builder()
                     .keys(doc! { "device_id": 1, "revision_id": 1 })
+                    .build(),
+            )
+            .await?;
+        self.deploy_reports()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "device_id": 1, "revision_id": 1, "kind.type": 1 })
                     .build(),
             )
             .await?;

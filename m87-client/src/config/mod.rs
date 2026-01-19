@@ -41,6 +41,9 @@ pub struct Config {
 
     #[serde(default)]
     pub manager_server_urls: Vec<String>,
+
+    #[serde(default)]
+    pub organization_id: Option<String>,
 }
 
 impl Default for Config {
@@ -58,6 +61,7 @@ impl Default for Config {
             auth_client_id: "E2J7xfFLgexzvhHhz4YqaJBy8Ys82SmM".to_string(),
             trust_invalid_server_cert: false,
             manager_server_urls: vec![],
+            organization_id: None,
         }
     }
 }

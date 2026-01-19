@@ -17,7 +17,7 @@ use crate::{
 // It must NEVER spawn `ssh` or assume a TTY.
 pub async fn connect_device_ssh(device_name: &str) -> Result<()> {
     let config = Config::load()?;
-    let resolved = devices::resolve_device_short_id_cached(device_name).await?;
+    let resolved = devices::resolve_device_cached(device_name).await?;
 
     let token = AuthManager::get_cli_token().await?;
 
