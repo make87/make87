@@ -103,7 +103,7 @@ impl AppConfig {
             .parse()
             .unwrap();
 
-        let allow_cros_org_device_sharing = std::env::var("ALLOW_CROS_ORG_DEVICE_SHARING")
+        let allow_cros_org_device_sharing = std::env::var("ALLOW_CROSS_ORG_DEVICE_SHARING")
             .unwrap_or_else(|_| "false".to_string())
             .parse()
             .unwrap();

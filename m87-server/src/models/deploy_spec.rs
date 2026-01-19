@@ -348,7 +348,7 @@ impl DeployReportDoc {
         let filter = doc! {
             "device_id": device_id,
             "revision_id": revision_id,
-            // "kind.type": "RunState",
+            "kind.type": "RunState",
             // greater than since its both u64. convert to long
             // "kind.data.report_time": doc! {"$gt": since}
         };
@@ -358,66 +358,64 @@ impl DeployReportDoc {
         let mut latest_alive: BTreeMap<String, u64> = BTreeMap::new();
         let mut latest_healthy: BTreeMap<String, u64> = BTreeMap::new();
         //
-        while let Ok(res) = cursor.try_next().await {
-            if let Some(doc) = res {
-                // get kind for each RunState. for each run id create a new Observe status.
-                // Use the latest time to set the current health and alive value and count total unhealthy and livelyness false
-                //
-                if let DeployReportKind::RunState(state) = doc.kind {
-                    let run_id = state.run_id;
-                    let report_time = state.report_time;
+        while let Some(doc) = cursor.try_next().await? {
+            // get kind for each RunState. for each run id create a new Observe status.
+            // Use the latest time to set the current health and alive value and count total unhealthy and livelyness false
+            //
+            if let DeployReportKind::RunState(state) = doc.kind {
+                let run_id = state.run_id;
+                let report_time = state.report_time;
 
-                    if !observations.contains_key(&run_id) {
-                        observations.insert(
-                            run_id.clone(),
-                            ObserveStatus {
-                                name: run_id.clone(),
-                                alive: false,
-                                healthy: false,
-                                crashes: 0,
-                                unhealthy_checks: 0,
-                            },
-                        );
-                    }
+                if !observations.contains_key(&run_id) {
+                    observations.insert(
+                        run_id.clone(),
+                        ObserveStatus {
+                            name: run_id.clone(),
+                            alive: false,
+                            healthy: false,
+                            crashes: 0,
+                            unhealthy_checks: 0,
+                        },
+                    );
+                }
 
-                    let status = observations.get_mut(&run_id).unwrap();
-                    match state.healthy {
-                        Some(val) => {
-                            if !val {
-                                status.unhealthy_checks += 1;
-                            }
-                            // check if latest health by report time in latest_healthy
-                            if let Some(latest_health) = latest_healthy.get(&run_id) {
-                                if latest_health > &report_time {
-                                    status.healthy = val;
-                                    // update latest_healthy
-                                    latest_healthy.insert(run_id.clone(), report_time);
-                                }
-                            } else {
-                                // update latest_healthy
-                                latest_healthy.insert(run_id.clone(), report_time);
-                                status.healthy = val;
-                            }
-                        }
-                        None => {}
-                    }
-                    // same for alive
-                    if let Some(alive) = state.alive {
-                        if !alive {
-                            status.crashes += 1;
+                let status = observations.get_mut(&run_id).unwrap();
+                match state.healthy {
+                    Some(val) => {
+                        if !val {
+                            status.unhealthy_checks += 1;
                         }
                         // check if latest health by report time in latest_healthy
-                        if let Some(latest_l) = latest_alive.get(&run_id) {
-                            if latest_l > &report_time {
-                                status.alive = alive;
-                                // update latest_alive
-                                latest_alive.insert(run_id.clone(), report_time);
+                        if let Some(latest_health) = latest_healthy.get(&run_id) {
+                            if latest_health > &report_time {
+                                status.healthy = val;
+                                // update latest_healthy
+                                latest_healthy.insert(run_id.clone(), report_time);
                             }
                         } else {
                             // update latest_healthy
-                            latest_alive.insert(run_id.clone(), report_time);
-                            status.alive = alive;
+                            latest_healthy.insert(run_id.clone(), report_time);
+                            status.healthy = val;
                         }
+                    }
+                    None => {}
+                }
+                // same for alive
+                if let Some(alive) = state.alive {
+                    if !alive {
+                        status.crashes += 1;
+                    }
+                    // check if latest health by report time in latest_healthy
+                    if let Some(latest_l) = latest_alive.get(&run_id) {
+                        if latest_l > &report_time {
+                            status.alive = alive;
+                            // update latest_alive
+                            latest_alive.insert(run_id.clone(), report_time);
+                        }
+                    } else {
+                        // update latest_healthy
+                        latest_alive.insert(run_id.clone(), report_time);
+                        status.alive = alive;
                     }
                 }
             }

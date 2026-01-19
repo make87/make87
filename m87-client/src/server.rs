@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use m87_shared::deploy_spec::{
     CreateDeployRevisionBody, DeployReport, DeploymentRevision, DeploymentStatusSnapshot,
@@ -257,11 +259,14 @@ fn get_client(trust_invalid_server_cert: bool) -> Result<Client> {
     if trust_invalid_server_cert {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
+            .timeout(Duration::from_secs(30))
             .build()?;
         Ok(client)
     } else {
         // otherwise we verify the certificate
-        let client = Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()?;
         Ok(client)
     }
 }

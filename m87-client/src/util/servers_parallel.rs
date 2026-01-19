@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures::{StreamExt, stream};
-use std::future::Future;
+use std::{future::Future, time::Duration};
 
 pub async fn fanout_servers<T, F, Fut>(
     server_urls: Vec<String>,
@@ -11,18 +11,33 @@ where
     F: Fn(String) -> Fut + Copy,
     Fut: Future<Output = Result<Vec<T>>>,
 {
+    let concurrency = concurrency.max(1); // avoid buffer_unordered(0) deadlock
+
     let per_server_results: Vec<Result<Vec<(String, T)>>> = stream::iter(server_urls)
-        .map(|server_url| async move {
-            let server_url_clone = server_url.clone();
-            match f(server_url).await {
-                Ok(items) => Ok(items
-                    .into_iter()
-                    .map(|item| (server_url_clone.clone(), item))
-                    .collect::<Vec<_>>()),
-                Err(e) => {
-                    // Attach URL context if you want; this is the minimal version.
-                    Err(e)
-                }
+        .map(|server_url| {
+            let url_for_items = server_url.clone();
+            async move {
+                tracing::debug!(server_url = %server_url, "fanout: starting");
+
+                // pick a sane timeout for your use-case
+                let res = tokio::time::timeout(Duration::from_secs(30), f(server_url)).await;
+
+                let mapped = match res {
+                    Ok(Ok(items)) => Ok(items
+                        .into_iter()
+                        .map(|item| (url_for_items.clone(), item))
+                        .collect::<Vec<_>>()),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => {
+                        tracing::warn!(server_url = %url_for_items, "fanout: timeout; skipping");
+                        // if you want to keep signature `Result<...>`, turn timeout into an error
+                        // otherwise you can return Ok(vec![]) here and skip logging later.
+                        return Ok(Vec::new());
+                    }
+                };
+
+                tracing::debug!(server_url = %url_for_items, ok = mapped.is_ok(), "fanout: finished");
+                mapped
             }
         })
         .buffer_unordered(concurrency)
@@ -30,12 +45,11 @@ where
         .await;
 
     let mut out = Vec::new();
-    for (i, res) in per_server_results.into_iter().enumerate() {
+    for res in per_server_results {
         match res {
             Ok(mut v) => out.append(&mut v),
             Err(err) => {
-                tracing::warn!(server_index = i, error = %err);
-                tracing::debug!(server_index = i, error = %err, "fanout server request failed; skipping");
+                tracing::warn!(error = %err, "fanout: request failed; skipping");
             }
         }
     }

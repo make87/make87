@@ -427,13 +427,11 @@ impl DeviceDoc {
         let mut emails: HashMap<String, Role> = HashMap::new();
         let mut org_ids: Vec<String> = Vec::new();
 
-        while let Ok(res) = cursor.try_next().await {
-            if let Some(role_doc) = res {
-                if let Some(email) = role_doc.reference_id.strip_prefix("user:") {
-                    emails.insert(email.to_string(), role_doc.role);
-                } else if let Some(org) = role_doc.reference_id.strip_prefix("org:") {
-                    org_ids.push(org.to_string());
-                }
+        while let Some(role_doc) = cursor.try_next().await? {
+            if let Some(email) = role_doc.reference_id.strip_prefix("user:") {
+                emails.insert(email.to_string(), role_doc.role);
+            } else if let Some(org) = role_doc.reference_id.strip_prefix("org:") {
+                org_ids.push(org.to_string());
             }
         }
 
@@ -453,12 +451,10 @@ impl DeviceDoc {
                 .find(doc! { "email": { "$in": &email_vec } })
                 .await?;
 
-            while let Ok(res) = c.try_next().await {
-                if let Some(udoc) = res {
-                    if let Some(email) = &udoc.email {
-                        if let Some(user_role) = &emails.get(email) {
-                            users_out.push(udoc.to_public_user(user_role)); // adjust mapping to shared User
-                        }
+            while let Some(udoc) = c.try_next().await? {
+                if let Some(email) = &udoc.email {
+                    if let Some(user_role) = &emails.get(email) {
+                        users_out.push(udoc.to_public_user(user_role)); // adjust mapping to shared User
                     }
                 }
             }
