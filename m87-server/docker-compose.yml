@@ -11,8 +11,6 @@ services:
       # Watchtower: always update to :latest, even if container was started with a versioned tag
       - "com.centurylinklabs.watchtower.enable=true"
       - "com.centurylinklabs.watchtower.image-reference=ghcr.io/make87/m87-server:latest"
-    env_file:
-      - .env
     environment:
       - RUST_LOG=${RUST_LOG:-info}
       - MONGO_URI=mongodb://${MONGO_INITDB_ROOT_USERNAME}:${MONGO_INITDB_ROOT_PASSWORD}@mongo:27017/admin
@@ -23,7 +21,13 @@ services:
       - UNIFIED_PORT=${UNIFIED_PORT:-8084}
       - STAGING=${STAGING:-1}
       - ADMIN_KEY=${ADMIN_KEY:-}
+      - ADMIN_EMAILS=${ADMIN_EMAILS:-}
       - CERTIFICATE_PATH=${CERTIFICATE_PATH:-/data/m87/certs/}
+      - ALLOW_CROSS_ORG_DEVICE_SHARING=${ALLOW_CROSS_ORG_DEVICE_SHARING:-false}
+      - AUDIT_RETENTION_DAYS=${AUDIT_RETENTION_DAYS:-30}
+      - REPORT_RETENTION_DAYS=${REPORT_RETENTION_DAYS:-7}
+      - USER_AUTO_ACCEPT_DOMAINS=${USER_AUTO_ACCEPT_DOMAINS:-}
+      - USERS_NEED_APPROVAL=${USERS_NEED_APPROVAL:-false}
     depends_on:
       - mongo
     networks:
@@ -39,8 +43,6 @@ services:
     image: mongo:8
     container_name: mongo
     restart: always
-    env_file:
-      - .env
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}

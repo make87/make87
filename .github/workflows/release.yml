@@ -509,7 +509,7 @@ jobs:
           # Publish compose configuration for each tag
           for TAG in $TAGS; do
             echo "Publishing compose configuration: $TAG"
-            docker compose publish -y $TAG
+            docker compose publish --with-env -y $TAG
           done
 
           echo "Docker Compose configurations published successfully"
