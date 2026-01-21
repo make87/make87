@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures::{StreamExt, TryStreamExt, stream};
 use m87_shared::{device::PublicDevice, roles::Role, users::User};
-use mongodb::bson::{doc, oid::ObjectId};
+use mongodb::bson::doc;
 use tokio::time::timeout;
 
 use crate::{
@@ -104,39 +104,19 @@ fn merge_roles(target: &mut HashMap<String, Role>, incoming: HashMap<String, Rol
 pub async fn get_org_devices(
     db: &Arc<Mongo>,
     org_id: &str,
+    role: &Role,
 ) -> Result<Vec<PublicDevice>, ServerError> {
-    let mut cursor = db
-        .roles()
-        .find(doc! { "reference_id": org_ref(org_id), "scope": { "$regex": "^device:" } })
-        .await?;
-
-    let mut device_oids: Vec<ObjectId> = Vec::new();
-    let mut device_role_map: HashMap<ObjectId, Role> = HashMap::new();
-    while let Some(role_doc) = cursor.try_next().await? {
-        if let Some(oid_str) = role_doc.scope.strip_prefix("device:") {
-            if let Ok(oid) = ObjectId::parse_str(oid_str) {
-                device_oids.push(oid);
-                device_role_map.insert(oid, role_doc.role);
-            }
-        }
-    }
-
-    if device_oids.is_empty() {
-        return Ok(vec![]);
-    }
+    let needed_org_scope = org_scope(org_id);
 
     let mut dcur = db
         .devices()
-        .find(doc! { "_id": { "$in": &device_oids } })
+        .find(doc! {"allowed_scopes": &needed_org_scope })
         .await?;
 
     let mut out: Vec<PublicDevice> = Vec::new();
     while let Some(dev) = dcur.try_next().await? {
-        let Some(role) = device_role_map.get(&dev.id.clone().unwrap()) else {
-            continue;
-        };
         // If you want the *org's* role on the device included, you'd need to fetch it and pass it here.
-        out.push(dev.to_public_device(&role));
+        out.push(dev.to_public_device(role));
     }
     Ok(out)
 }

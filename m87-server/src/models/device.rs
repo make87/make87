@@ -21,7 +21,8 @@ use crate::config::AppConfig;
 use crate::models::audit_logs::AuditLogDoc;
 use crate::models::deploy_spec::{CreateDeployReportBody, DeployReportDoc, DeployRevisionDoc};
 use crate::models::org;
-use crate::models::roles::{CreateRoleBinding, RoleDoc, reference_id_for_subject};
+use crate::models::roles::{CreateRoleBinding, RoleDoc};
+use crate::models::user::UserDoc;
 use crate::{
     auth::{access_control::AccessControlled, claims::Claims},
     db::Mongo,
@@ -375,10 +376,10 @@ impl DeviceDoc {
     pub async fn add_or_update_device_access(
         &self,
         db: &Arc<Mongo>,
-        email_or_org_id: &str,
+        email: &str,
         role: Role,
     ) -> ServerResult<()> {
-        let reference_id = reference_id_for_subject(email_or_org_id);
+        let reference_id = UserDoc::create_reference_id(email);
         let scope = Self::scope_for_device(&self.id.clone().unwrap());
 
         // Create binding (your RoleDoc::create already encodes "role + scope" binding).
@@ -396,12 +397,8 @@ impl DeviceDoc {
         Ok(())
     }
 
-    pub async fn remove_device_access(
-        &self,
-        db: &Arc<Mongo>,
-        email_or_org_id: &str,
-    ) -> ServerResult<()> {
-        let reference_id = reference_id_for_subject(email_or_org_id);
+    pub async fn remove_device_access(&self, db: &Arc<Mongo>, email: &str) -> ServerResult<()> {
+        let reference_id = UserDoc::create_reference_id(email);
         let scope = Self::scope_for_device(&self.id.clone().unwrap());
 
         // If your RoleDoc has a delete helper, call it. Otherwise do a direct delete.
@@ -416,13 +413,47 @@ impl DeviceDoc {
         Ok(())
     }
 
+    pub async fn add_allowed_scope(&self, db: &Arc<Mongo>, scope: &str) -> ServerResult<()> {
+        // update device in db
+        let device = self.clone();
+        let res = db
+            .devices()
+            .update_one(
+                doc! { "_id": &device.id.unwrap() },
+                doc! { "$addToSet": { "allowed_scopes": scope } },
+            )
+            .await?;
+
+        if res.modified_count == 0 {
+            return Err(ServerError::not_found("Device not found"));
+        }
+        Ok(())
+    }
+
+    pub async fn remove_allowed_scope(&self, db: &Arc<Mongo>, scope: &str) -> ServerResult<()> {
+        // update device in db
+        let device = self.clone();
+        let res = db
+            .devices()
+            .update_one(
+                doc! { "_id": &device.id.unwrap() },
+                doc! { "$pull": { "allowed_scopes": scope } },
+            )
+            .await?;
+
+        if res.modified_count == 0 {
+            return Err(ServerError::not_found("Device not found"));
+        }
+        Ok(())
+    }
+
     pub async fn list_users_with_access(&self, db: &Arc<Mongo>) -> ServerResult<Vec<User>> {
-        let scope = Self::scope_for_device(&self.id.clone().unwrap());
+        let scopes = self.allowed_scopes.clone();
 
         // Fetch all role bindings for this device scope.
         // Assumes RoleDoc stored fields: reference_id, scope, role.
         let roles = db.roles(); // adjust
-        let mut cursor = roles.find(doc! { "scope": &scope }).await?;
+        let mut cursor = roles.find(doc! { "scope": { "$in": scopes } }).await?;
 
         let mut emails: HashMap<String, Role> = HashMap::new();
         let mut org_ids: Vec<String> = Vec::new();

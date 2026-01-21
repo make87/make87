@@ -844,14 +844,12 @@ pub async fn add_org_device(
     trust: bool,
     org_id: &str,
     device_id: &str,
-    role: Role,
 ) -> Result<()> {
     let url = format!("{}/organization/{}/devices", server_url, org_id);
     let client = get_client(trust)?;
 
     let body = AddDeviceBody {
         device_id: device_id.to_string(),
-        role,
     };
 
     let res = client

@@ -200,8 +200,6 @@ enum OrgDeviceAction {
         device_name: String,
         #[arg(long)]
         org_id: Option<String>,
-        #[arg(value_parser = parse_role)]
-        role: Role,
     },
     Remove {
         device_name: String,
@@ -951,9 +949,8 @@ pub async fn cli() -> anyhow::Result<()> {
                 OrgDeviceAction::Add {
                     org_id,
                     device_name: device_id,
-                    role,
                 } => {
-                    let _ = org::add_device(org_id, &device_id, role).await?;
+                    let _ = org::add_device(org_id, &device_id).await?;
                     println!("Device added");
                 }
                 OrgDeviceAction::Remove {

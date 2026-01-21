@@ -234,7 +234,7 @@ pub async fn list_devices(org_id: Option<String>) -> Result<Vec<PublicDevice>> {
     Ok(out)
 }
 
-pub async fn add_device(org_id: Option<String>, device_name: &str, role: Role) -> Result<()> {
+pub async fn add_device(org_id: Option<String>, device_name: &str) -> Result<()> {
     let token = AuthManager::get_cli_token().await?;
     let config = Config::load()?;
     let trust = config.trust_invalid_server_cert;
@@ -247,9 +247,8 @@ pub async fn add_device(org_id: Option<String>, device_name: &str, role: Role) -
         let token = token.clone();
         let device_id = resolved.id.clone();
         let org_id = org_id.clone();
-        let role = role.clone();
         async move {
-            server::add_org_device(&server_url, &token, trust, &org_id, &device_id, role).await?;
+            server::add_org_device(&server_url, &token, trust, &org_id, &device_id).await?;
             Ok(Vec::<()>::new())
         }
     })

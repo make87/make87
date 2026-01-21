@@ -13,7 +13,6 @@ use m87_shared::users::User;
 
 use crate::auth::claims::Claims;
 use crate::models::audit_logs::AuditLogDoc;
-use crate::models::device::DeviceDoc;
 use crate::models::org;
 use crate::models::roles::{CreateRoleBinding, RoleDoc};
 use crate::models::user::UserDoc;
@@ -340,8 +339,8 @@ async fn list_org_devices(
     if !claims.has_scope_and_role(&scope, Role::Viewer) {
         return Err(ServerError::forbidden("Not authorized for organization"));
     }
-
-    let mut out: Vec<PublicDevice> = org::get_org_devices(&state.db, &id).await?;
+    let role = claims.get_role_for_scope(&scope).unwrap_or(Role::Viewer);
+    let mut out: Vec<PublicDevice> = org::get_org_devices(&state.db, &id, &role).await?;
 
     for d in &mut out {
         if state.relay.has_tunnel(&d.short_id).await {
@@ -369,13 +368,14 @@ async fn add_org_device(
     let device_oid = ObjectId::parse_str(&payload.device_id)
         .map_err(|_| ServerError::bad_request("Invalid device ObjectId"))?;
 
-    // Validate device exists (clean error)
-    let device_opt = state
-        .db
-        .devices()
-        .find_one(doc! { "_id": &device_oid })
+    let device_opt = claims
+        .find_one_with_scope_and_role(
+            &state.db.devices(),
+            doc! { "_id": &device_oid },
+            Role::Admin,
+        )
         .await?;
-    let _ = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
+    let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
 
     let _ = AuditLogDoc::add(
         &state.db,
@@ -386,16 +386,7 @@ async fn add_org_device(
         Some(device_oid.clone()),
     )
     .await;
-
-    RoleDoc::create(
-        &state.db,
-        CreateRoleBinding {
-            reference_id: org::org_ref(&id),
-            role: payload.role,
-            scope: DeviceDoc::scope_for_device(&device_oid),
-        },
-    )
-    .await?;
+    let _ = device.add_allowed_scope(&state.db, &scope).await?;
 
     Ok(ServerResponse::builder()
         .status_code(axum::http::StatusCode::NO_CONTENT)
@@ -419,6 +410,15 @@ async fn remove_org_device(
     let device_oid = ObjectId::parse_str(&device_id)
         .map_err(|_| ServerError::bad_request("Invalid device ObjectId"))?;
 
+    let device_opt = claims
+        .find_one_with_scope_and_role(
+            &state.db.devices(),
+            doc! { "_id": &device_oid },
+            Role::Admin,
+        )
+        .await?;
+    let device = device_opt.ok_or_else(|| ServerError::not_found("Device not found"))?;
+
     let _ = AuditLogDoc::add(
         &state.db,
         &claims,
@@ -429,11 +429,7 @@ async fn remove_org_device(
     )
     .await;
 
-    state
-        .db
-        .roles()
-        .delete_one(doc! { "reference_id": org::org_ref(&id), "scope": DeviceDoc::scope_for_device(&device_oid) })
-        .await?;
+    let _ = device.remove_allowed_scope(&state.db, &scope).await?;
 
     Ok(ServerResponse::builder()
         .status_code(axum::http::StatusCode::NO_CONTENT)

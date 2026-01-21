@@ -81,6 +81,7 @@ impl Claims {
 
             let reference_id = user.get_reference_id();
             let mut roles = RoleDoc::list_for_reference(db, &reference_id).await?;
+
             roles.push(RoleDoc {
                 id: None,
                 reference_id: reference_id.clone(),

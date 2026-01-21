@@ -1,6 +1,5 @@
 use crate::{
     db::Mongo,
-    models::{org, user::UserDoc},
     response::{ServerError, ServerResult},
 };
 use futures::StreamExt;
@@ -137,6 +136,26 @@ impl RoleDoc {
         Ok(items)
     }
 
+    pub async fn list_for_references(
+        db: &Arc<Mongo>,
+        reference_ids: Vec<String>,
+    ) -> ServerResult<Vec<RoleDoc>> {
+        let mut cursor = db
+            .roles()
+            .find(doc! { "reference_id": { "$in": reference_ids } })
+            .await
+            .map_err(|_| ServerError::internal_error("Failed to list user role bindings"))?;
+
+        let mut items = Vec::new();
+        while let Some(res) = cursor.next().await {
+            match res {
+                Ok(doc) => items.push(doc),
+                Err(_) => return Err(ServerError::internal_error("Failed to decode role binding")),
+            }
+        }
+        Ok(items)
+    }
+
     /// Delete a specific binding (admin)
     pub async fn delete(db: &Arc<Mongo>, reference_id: &str, scope: &str) -> ServerResult<()> {
         db.roles()
@@ -144,13 +163,5 @@ impl RoleDoc {
             .await
             .map_err(|_| ServerError::internal_error("Failed to delete role binding"))?;
         Ok(())
-    }
-}
-
-pub fn reference_id_for_subject(email_or_org_id: &str) -> String {
-    if email_or_org_id.contains('@') {
-        UserDoc::create_reference_id(email_or_org_id)
-    } else {
-        org::org_ref(email_or_org_id)
     }
 }
