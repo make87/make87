@@ -336,7 +336,7 @@ fn acquire_runtime_lock() -> Result<File> {
     let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
 
     if result != 0 {
-        bail!("Another m87 runtime is already running. Use 'm87 runtime status' to check.");
+        bail!("Another m87 runtime is already running. Check 'm87 runtime status' for systemd service or 'pgrep -af \'m87 runtime run\'' for manual instances.");
     }
 
     Ok(file)
