@@ -37,7 +37,9 @@ struct GitHubAsset {
 }
 
 pub async fn update(interactive: bool) -> Result<bool> {
-    info!("Checking for updates...");
+    if interactive {
+        println!("Checking for updates...");
+    }
     let current_version = cargo_crate_version!();
     let asset_name = arch_bin_name();
 
@@ -58,7 +60,7 @@ pub async fn update(interactive: bool) -> Result<bool> {
     // Check if update is needed
     if !bump_is_greater(current_version, new_version)? {
         if interactive {
-            info!("You are running the latest version ({})", current_version);
+            println!("You are already running the latest version (v{})", current_version);
         }
         return Ok(false);
     }
@@ -71,8 +73,8 @@ pub async fn update(interactive: bool) -> Result<bool> {
         .ok_or_else(|| anyhow!("Asset '{}' not found in release", asset_name))?;
 
     if interactive {
-        info!("New release found: v{} → v{}", current_version, new_version);
-        info!("Downloading {}...", asset_name);
+        println!("New release found: v{} → v{}", current_version, new_version);
+        println!("Downloading {}...", asset_name);
     }
 
     // Create temp directory for download
@@ -95,11 +97,13 @@ pub async fn update(interactive: bool) -> Result<bool> {
 
     // Replace the current binary
     if interactive {
-        info!("Replacing binary...");
+        println!("Replacing binary...");
     }
     self_update::self_replace::self_replace(&tmp_path)?;
 
-    info!("Updated from v{} → v{}", current_version, new_version);
+    if interactive {
+        println!("Updated from v{} → v{}", current_version, new_version);
+    }
     Ok(true)
 }
 
