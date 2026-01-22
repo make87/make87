@@ -104,11 +104,7 @@ enum Commands {
     Version,
 
     /// Update the CLI to the latest version
-    Update {
-        /// Update to specific version
-        #[arg(long)]
-        version: Option<String>,
-    },
+    Update,
 
     /// Copy files between local and remote devices (SCP-style)
     Cp {
@@ -800,22 +796,8 @@ pub async fn cli() -> anyhow::Result<()> {
             );
         }
 
-        Commands::Update { version } => {
-            if let Some(v) = version {
-                tracing::info!(
-                    "Note: Specific version updates not yet supported, updating to latest version"
-                );
-                tracing::info!("Requested version: {}", v);
-            }
-
-            tracing::info!("[loading]");
-            tracing::info!("Checking for updates...");
-            let success = update::update(true).await?;
-            if success {
-                tracing::info!("Update successful");
-            } else {
-                tracing::info!("Already at latest version");
-            }
+        Commands::Update => {
+            update::update(true).await?;
         }
 
         Commands::Cp { source, dest } => {
