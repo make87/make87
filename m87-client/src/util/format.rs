@@ -1,17 +1,21 @@
+use chrono::{SecondsFormat, Utc};
+
 const RESET: &str = "\x1b[0m";
+const GREY: &str = "\x1b[90m";
 const CYAN: &str = "\x1b[36m";
 const WHITE: &str = "\x1b[37m";
 
 pub fn format_log(source: &str, message: &str, ansi: bool) -> String {
-    // let ts = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
+    let ts = Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true);
     let msg = message.trim_end_matches('\n');
 
     if !ansi {
-        return format!("{source}: {msg}");
+        return format!("[{ts}] [{source}] {msg}");
     }
 
     format!(
-        "{cyan}{source}{reset}: {white}{msg}{reset}",
+        "{grey}[{ts}]{reset} {cyan}[{source}]{reset} {white}{msg}{reset}",
+        grey = GREY,
         cyan = CYAN,
         white = WHITE,
         reset = RESET,
@@ -21,10 +25,23 @@ pub fn format_log(source: &str, message: &str, ansi: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_format_log_without_ansi() {
+        let result = format_log("myapp", "Hello world", false);
+        // Format: "2024-01-01T12:00:00.000000Z myapp: Hello world"
+        assert!(result.contains("myapp: Hello world"));
+        assert!(result.contains("T")); // ISO timestamp has T separator
+        assert!(result.contains("Z")); // UTC timezone marker
+        // Should not contain ANSI codes
+        assert!(!result.contains("\x1b["));
+    }
+
     #[test]
     fn test_format_log_with_ansi() {
         let result = format_log("myapp", "Hello world", true);
         // Should contain ANSI escape codes
+        assert!(result.contains(GREY));
         assert!(result.contains(CYAN));
         assert!(result.contains(WHITE));
         assert!(result.contains(RESET));

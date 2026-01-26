@@ -45,27 +45,22 @@ where
         // Metadata
         let meta = event.metadata();
         let level = meta.level();
-        let target = meta.target();
-
-        // Timestamp
-        let ts = timestamp_hms();
 
         // Simple ANSI colors
-        let lvl_colored = match *level {
-            tracing::Level::ERROR => "\x1b[31mERROR\x1b[0m",
-            tracing::Level::WARN => "\x1b[33mWARN\x1b[0m",
-            tracing::Level::INFO => "\x1b[32mINFO\x1b[0m",
-            tracing::Level::DEBUG => "\x1b[34mDEBUG\x1b[0m",
-            tracing::Level::TRACE => "\x1b[90mTRACE\x1b[0m",
-        };
-
-        // Build final line
+        // dont set loglvl is [observe] is in msg
         let mut line = String::new();
-        let _ = write!(
-            line,
-            "[{}] {} [{}] {}",
-            ts, lvl_colored, target, visitor.msg
-        );
+        if !visitor.msg.contains("[observe]") {
+            let lvl_colored = match *level {
+                tracing::Level::ERROR => "\x1b[31mERROR\x1b[0m",
+                tracing::Level::WARN => "\x1b[33mWARN\x1b[0m",
+                tracing::Level::INFO => "\x1b[32mINFO\x1b[0m",
+                tracing::Level::DEBUG => "\x1b[34mDEBUG\x1b[0m",
+                tracing::Level::TRACE => "\x1b[90mTRACE\x1b[0m",
+            };
+            let _ = write!(line, "{} {}", lvl_colored, visitor.msg);
+        } else {
+            let _ = write!(line, "{}", visitor.msg);
+        }
 
         let _ = self.tx.send(line);
     }
@@ -81,7 +76,7 @@ pub fn init_tracing_with_log_layer(default_level: &str) -> broadcast::Sender<Str
 
     tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_fmt::layer().with_target(false).with_file(false))
+        .with(tracing_fmt::layer())
         .with(LogBroadcastLayer::new(tx.clone()))
         .init();
 
