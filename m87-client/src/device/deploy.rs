@@ -616,7 +616,7 @@ pub async fn compose_file_to_runspec_yaml(file: &Path, name: Option<&str>) -> Re
     let observe = ObserveSpec {
         logs: Some(LogSpec {
             follow: Some(CommandSpec::Sh(format!(
-                "docker compose -f {} logs -f --timestamps",
+                "docker compose -f {} logs -f --timestamps -n 50",
                 file_name
             ))),
         }),

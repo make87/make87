@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::util::format;
 use crate::{
@@ -19,22 +20,33 @@ pub async fn handle_logs_io(io: &mut QuicIo, unit_manager: Arc<DeploymentManager
 
     loop {
         tokio::select! {
-            Ok(line) = app_rx.recv() => {
-                // only format if line does not start with [
-                let formatted_msg = match line.trim().contains("[observe]") {
-                    true => line.to_string().replace("[observe]", ""),
-                    false => format::format_log("m87", &line, true),
+            res = app_rx.recv() => {
+                let line = match res {
+                    Ok(line) => line,
+                    Err(RecvError::Lagged(n)) => {
+                        // You fell behind; old messages were dropped.
+                        // Don't break; just keep streaming the newest.
+
+                        let _ = io.write_all(format!("(dropped {n} log lines)\n").as_bytes()).await;
+                        continue;
+                    }
+                    Err(RecvError::Closed) => {
+                        break;
+                    }
                 };
 
-                if io.write_all(formatted_msg.as_bytes()).await.is_err() {
-                    break;
-                }
-                if io.write_all(b"\n").await.is_err() {
-                    break;
-                }
+                let formatted_msg = if line.trim().contains("[observe]") {
+                    line.replace("[observe]", "")
+                } else {
+                    format::format_log("m87", &line, true)
+                };
+
+                if io.write_all(formatted_msg.as_bytes()).await.is_err() { break; }
+                if io.write_all(b"\n").await.is_err() { break; }
             }
         }
     }
+
     let _ = unit_manager.stop_log_follow().await?;
 
     Ok(())

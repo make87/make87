@@ -67,7 +67,7 @@ where
 }
 
 pub fn init_tracing_with_log_layer(default_level: &str) -> broadcast::Sender<String> {
-    let (tx, _rx) = broadcast::channel(1024);
+    let (tx, _rx) = broadcast::channel(32_768);
     LOG_TX.set(tx.clone()).ok();
 
     let filter = EnvFilter::try_from_default_env()
