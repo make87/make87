@@ -343,86 +343,68 @@ impl DeployReportDoc {
         db: &Arc<Mongo>,
         revision_id: &str,
         device_id: &ObjectId,
-        // since: u32,
+        // since: Option<u64>,
     ) -> ServerResult<Vec<ObserveStatus>> {
-        let filter = doc! {
+        let mut match_doc = doc! {
             "device_id": device_id,
             "revision_id": revision_id,
             "kind.type": "RunState",
-            // greater than since its both u64. convert to long
-            // "kind.data.report_time": doc! {"$gt": since}
         };
 
-        let mut cursor = db.deploy_reports().find(filter).await?;
-        let mut observations: BTreeMap<String, ObserveStatus> = BTreeMap::new();
-        let mut latest_alive: BTreeMap<String, u64> = BTreeMap::new();
-        let mut latest_healthy: BTreeMap<String, u64> = BTreeMap::new();
-        //
+        // If you add `since`, uncomment this:
+        // if let Some(since) = since {
+        //     match_doc.insert("kind.data.report_time", doc! { "$gt": Bson::Int64(since as i64) });
+        // }
+
+        let pipeline = vec![
+            doc! { "$match": match_doc },
+            // Ensure `$first` in the group is the latest status.
+            doc! { "$sort": { "kind.data.run_id": 1, "kind.data.report_time": -1 } },
+            doc! { "$group": {
+                "_id": "$kind.data.run_id",
+
+                // latest values (may be null if the newest event didn't include the field)
+                "latest_report_time": { "$first": "$kind.data.report_time" },
+                "latest_healthy": { "$first": "$kind.data.healthy" },
+                "latest_alive": { "$first": "$kind.data.alive" },
+
+                // counters across all docs
+                "unhealthy_checks": { "$sum": {
+                    "$cond": [
+                        { "$eq": ["$kind.data.healthy", false] },
+                        1,
+                        0
+                    ]
+                }},
+                "crashes": { "$sum": {
+                    "$cond": [
+                        { "$eq": ["$kind.data.alive", false] },
+                        1,
+                        0
+                    ]
+                }},
+            }},
+            // Build your ObserveStatus shape; treat null as false (same as your init defaults).
+            doc! { "$project": {
+                "_id": 0,
+                "name": "$_id",
+                "alive": { "$ifNull": ["$latest_alive", false] },
+                "healthy": { "$ifNull": ["$latest_healthy", false] },
+                "crashes": 1,
+                "unhealthy_checks": 1,
+            }},
+        ];
+
+        let mut cursor = db.deploy_reports().aggregate(pipeline).await?;
+        let mut out = Vec::new();
         while let Some(doc) = cursor.try_next().await? {
-            // get kind for each RunState. for each run id create a new Observe status.
-            // Use the latest time to set the current health and alive value and count total unhealthy and livelyness false
-            //
-            if let DeployReportKind::RunState(state) = doc.kind {
-                let run_id = state.run_id;
-                let report_time = state.report_time;
-
-                if !observations.contains_key(&run_id) {
-                    observations.insert(
-                        run_id.clone(),
-                        ObserveStatus {
-                            name: run_id.clone(),
-                            alive: false,
-                            healthy: false,
-                            crashes: 0,
-                            unhealthy_checks: 0,
-                        },
-                    );
-                }
-
-                let status = observations.get_mut(&run_id).unwrap();
-                match state.healthy {
-                    Some(val) => {
-                        if !val {
-                            status.unhealthy_checks += 1;
-                        }
-                        // check if latest health by report time in latest_healthy
-                        if let Some(latest_health) = latest_healthy.get(&run_id) {
-                            if latest_health > &report_time {
-                                status.healthy = val;
-                                // update latest_healthy
-                                latest_healthy.insert(run_id.clone(), report_time);
-                            }
-                        } else {
-                            // update latest_healthy
-                            latest_healthy.insert(run_id.clone(), report_time);
-                            status.healthy = val;
-                        }
-                    }
-                    None => {}
-                }
-                // same for alive
-                if let Some(alive) = state.alive {
-                    if !alive {
-                        status.crashes += 1;
-                    }
-                    // check if latest health by report time in latest_healthy
-                    if let Some(latest_l) = latest_alive.get(&run_id) {
-                        if latest_l > &report_time {
-                            status.alive = alive;
-                            // update latest_alive
-                            latest_alive.insert(run_id.clone(), report_time);
-                        }
-                    } else {
-                        // update latest_healthy
-                        latest_alive.insert(run_id.clone(), report_time);
-                        status.alive = alive;
-                    }
-                }
-            }
+            out.push(
+                mongodb::bson::from_document::<ObserveStatus>(doc).map_err(|e| {
+                    ServerError::internal_error(&format!("Failed to parse ObserveStatus: {}", e))
+                })?,
+            );
         }
-
-        let obs_list: Vec<ObserveStatus> = observations.into_values().collect();
-        Ok(obs_list)
+        Ok(out)
     }
 
     pub async fn create_or_update(

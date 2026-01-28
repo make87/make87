@@ -360,8 +360,12 @@ async fn list_device_revision_reports(
         return Err(ServerError::not_found("Device not found"));
     }
 
+    // limit to max 5
+    let mut page = pagination.clone();
+    page.limit = page.limit.min(5);
+
     let docs =
-        DeployReportDoc::list_for_device(&state.db, &device_oid, &revision_id, &pagination).await?;
+        DeployReportDoc::list_for_device(&state.db, &device_oid, &revision_id, &page).await?;
     let reports: Vec<DeployReport> = docs.into_iter().map(|doc| doc.to_pub_report()).collect();
     let total_count = reports.len() as u64;
 
@@ -370,8 +374,8 @@ async fn list_device_revision_reports(
         .status_code(axum::http::StatusCode::OK)
         .pagination(ResponsePagination {
             count: total_count,
-            offset: pagination.offset,
-            limit: pagination.limit,
+            offset: page.offset,
+            limit: page.limit,
         })
         .build())
 }

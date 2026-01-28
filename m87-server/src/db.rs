@@ -185,6 +185,27 @@ impl Mongo {
                     .build(),
             )
             .await?;
+        self.deploy_revisions()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! { "device_id": 1, "revision.id": 1, "kind.type": 1 })
+                    .build(),
+            )
+            .await?;
+
+        self.deploy_reports()
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! {
+                        "device_id": 1,
+                        "revision_id": 1,
+                        "kind.type": 1,
+                        "kind.data.run_id": 1,
+                        "kind.data.report_time": -1
+                    })
+                    .build(),
+            )
+            .await?;
 
         // group + revision.id
         // self.deploy_revisions()
